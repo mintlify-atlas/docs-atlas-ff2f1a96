@@ -1,0 +1,228 @@
+---
+title: Two Counters
+description: Learn how to compose features together using Scope and reducer builders
+---
+
+The Two Counters example demonstrates how to take small features and compose them into larger ones. This is a fundamental pattern in TCA for building modular, reusable components.
+
+## Overview
+
+This example shows how to:
+- Compose child features using `Scope`
+- Embed child state in parent state
+- Route child actions through parent actions
+- Share views across feature boundaries
+
+## Implementation
+
+<CodeGroup>
+
+```swift Reducer
+import ComposableArchitecture
+import SwiftUI
+
+@Reducer
+struct TwoCounters {
+  @ObservableState
+  struct State: Equatable {
+    var counter1 = Counter.State()
+    var counter2 = Counter.State()
+  }
+
+  enum Action {
+    case counter1(Counter.Action)
+    case counter2(Counter.Action)
+  }
+
+  var body: some Reducer<State, Action> {
+    Scope(state: \.counter1, action: \.counter1) {
+      Counter()
+    }
+    Scope(state: \.counter2, action: \.counter2) {
+      Counter()
+    }
+  }
+}
+```
+
+```swift View
+struct TwoCountersView: View {
+  let store: StoreOf<TwoCounters>
+
+  var body: some View {
+    Form {
+      HStack {
+        Text("Counter 1")
+        Spacer()
+        CounterView(
+          store: store.scope(
+            state: \.counter1,
+            action: \.counter1
+          )
+        )
+      }
+
+      HStack {
+        Text("Counter 2")
+        Spacer()
+        CounterView(
+          store: store.scope(
+            state: \.counter2,
+            action: \.counter2
+          )
+        )
+      }
+    }
+    .navigationTitle("Two counters")
+  }
+}
+```
+
+```swift Preview
+#Preview {
+  NavigationStack {
+    TwoCountersView(
+      store: Store(initialState: TwoCounters.State()) {
+        TwoCounters()
+      }
+    )
+  }
+}
+```
+
+</CodeGroup>
+
+## Key Concepts
+
+### State Composition
+
+The parent state embeds child state as properties:
+
+```swift
+@ObservableState
+struct State: Equatable {
+  var counter1 = Counter.State()
+  var counter2 = Counter.State()
+}
+```
+
+Each counter maintains its own independent state.
+
+### Action Composition
+
+Parent actions contain child actions:
+
+```swift
+enum Action {
+  case counter1(Counter.Action)
+  case counter2(Counter.Action)
+}
+```
+
+This creates a clear routing path for actions through the feature hierarchy.
+
+### The Scope Reducer
+
+The `Scope` reducer connects parent and child domains:
+
+```swift
+Scope(state: \.counter1, action: \.counter1) {
+  Counter()
+}
+```
+
+This tells TCA:
+- Where to find child state in parent state (`\.counter1`)
+- How to embed child actions in parent actions (`\.counter1`)
+- What reducer to run for that domain (`Counter()`)
+
+### View Scoping
+
+Views use `scope` to focus on child domains:
+
+```swift
+CounterView(
+  store: store.scope(
+    state: \.counter1,
+    action: \.counter1
+  )
+)
+```
+
+This creates a `Store<Counter.State, Counter.Action>` from the parent `Store<TwoCounters.State, TwoCounters.Action>`.
+
+## Benefits of Composition
+
+### Reusability
+
+The `Counter` feature and `CounterView` are completely reusable. They have no knowledge of the parent feature.
+
+### Modularity
+
+Each counter is isolated. Changes to one counter don't affect the other.
+
+### Testability
+
+You can test child features in isolation or test the composed feature:
+
+```swift
+@Test
+func testIndependentCounters() async {
+  let store = TestStore(initialState: TwoCounters.State()) {
+    TwoCounters()
+  }
+
+  // Counter 1 increments
+  await store.send(.counter1(.incrementButtonTapped)) {
+    $0.counter1.count = 1
+  }
+
+  // Counter 2 increments independently
+  await store.send(.counter2(.incrementButtonTapped)) {
+    $0.counter2.count = 1
+  }
+
+  // Counter 1 decrements
+  await store.send(.counter1(.decrementButtonTapped)) {
+    $0.counter1.count = 0
+  }
+}
+```
+
+## Parent Logic
+
+Parents can observe and react to child actions:
+
+```swift
+var body: some Reducer<State, Action> {
+  Scope(state: \.counter1, action: \.counter1) {
+    Counter()
+  }
+  Scope(state: \.counter2, action: \.counter2) {
+    Counter()
+  }
+  Reduce { state, action in
+    switch action {
+    case .counter1(.incrementButtonTapped):
+      // Parent can react to counter1 incrementing
+      return .none
+    case .counter2(.decrementButtonTapped):
+      // Parent can react to counter2 decrementing
+      return .none
+    default:
+      return .none
+    }
+  }
+}
+```
+
+## Source Code
+
+View the complete example in the TCA repository:
+- [TwoCounters.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/CaseStudies/SwiftUICaseStudies/01-GettingStarted-Composition-TwoCounters.swift)
+
+## Next Steps
+
+- Explore [collections](/fundamentals/collections) for composing many features
+- Learn about [tree-based navigation](/fundamentals/navigation) for complex hierarchies
+- See [shared state](/fundamentals/shared-state) for sharing data across features

@@ -1,0 +1,244 @@
+---
+title: ForEach
+description: Embeds a child reducer for each element in a collection of parent state
+---
+
+# ForEach
+
+The `forEach` operator embeds a child reducer in a parent domain that operates on elements of a collection in parent state. It's used when a parent feature manages a list of child features and needs to run child logic for actions targeting specific elements.
+
+## Method Signature
+
+```swift
+public func forEach<ElementState, ElementAction, ID: Hashable, Element: Reducer<ElementState, ElementAction>>(
+  _ toElementsState: WritableKeyPath<State, IdentifiedArray<ID, ElementState>>,
+  action toElementAction: CaseKeyPath<Action, IdentifiedAction<ID, ElementAction>>,
+  @ReducerBuilder<ElementState, ElementAction> element: () -> Element,
+  fileID: StaticString = #fileID,
+  filePath: StaticString = #filePath,
+  line: UInt = #line,
+  column: UInt = #column
+) -> some Reducer<State, Action>
+```
+
+**Parameters:**
+- `toElementsState`: A writable key path from parent state to an `IdentifiedArray` of child state
+- `toElementAction`: A case path from parent action to an `IdentifiedAction` of child actions
+- `element`: A reducer builder closure that describes the child reducer to run for each element
+
+**Returns:** A reducer that combines the child reducer with the parent reducer
+
+## Related Types
+
+### IdentifiedAction
+
+```swift
+public enum IdentifiedAction<ID: Hashable & Sendable, Action> {
+  case element(id: ID, action: Action)
+}
+```
+
+A wrapper type for actions that target specific elements in a collection by their ID.
+
+### IdentifiedActionOf
+
+```swift
+public typealias IdentifiedActionOf<R: Reducer> = IdentifiedAction<R.State.ID, R.Action>
+  where R.State: Identifiable
+```
+
+A convenience type alias for identified actions of a reducer whose state is `Identifiable`.
+
+## Usage
+
+### Basic list management
+
+```swift
+import IdentifiedCollections
+
+@Reducer
+struct Row {
+  struct State: Identifiable {
+    let id: UUID
+    var title: String
+    var isComplete = false
+  }
+  
+  enum Action {
+    case toggleComplete
+    case titleChanged(String)
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .toggleComplete:
+        state.isComplete.toggle()
+        return .none
+      case let .titleChanged(title):
+        state.title = title
+        return .none
+      }
+    }
+  }
+}
+
+@Reducer
+struct TodoList {
+  struct State {
+    var rows: IdentifiedArrayOf<Row.State> = []
+  }
+  
+  enum Action {
+    case rows(IdentifiedActionOf<Row>)
+    case addRowTapped
+    case deleteRow(id: Row.State.ID)
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .rows:
+        // Row actions are handled by forEach
+        return .none
+        
+      case .addRowTapped:
+        state.rows.append(Row.State(id: UUID(), title: ""))
+        return .none
+        
+      case let .deleteRow(id):
+        state.rows.remove(id: id)
+        return .none
+      }
+    }
+    .forEach(\.rows, action: \.rows) {
+      Row()
+    }
+  }
+}
+```
+
+### With network effects
+
+```swift
+@Reducer
+struct Item {
+  struct State: Identifiable {
+    let id: UUID
+    var name: String
+    var isLoading = false
+  }
+  
+  enum Action {
+    case refresh
+    case refreshResponse(Result<String, Error>)
+  }
+  
+  @Dependency(\.apiClient) var apiClient
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .refresh:
+        state.isLoading = true
+        return .run { [id = state.id] send in
+          let name = try await apiClient.fetchItem(id)
+          await send(.refreshResponse(.success(name)))
+        } catch: { error, send in
+          await send(.refreshResponse(.failure(error)))
+        }
+        
+      case let .refreshResponse(.success(name)):
+        state.isLoading = false
+        state.name = name
+        return .none
+        
+      case .refreshResponse(.failure):
+        state.isLoading = false
+        return .none
+      }
+    }
+  }
+}
+
+@Reducer
+struct ItemList {
+  struct State {
+    var items: IdentifiedArrayOf<Item.State> = []
+  }
+  
+  enum Action {
+    case items(IdentifiedActionOf<Item>)
+    case refreshAll
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .items:
+        return .none
+        
+      case .refreshAll:
+        // Send refresh action to all items
+        return .merge(
+          state.items.map { item in
+            .send(.items(.element(id: item.id, action: .refresh)))
+          }
+        )
+      }
+    }
+    .forEach(\.items, action: \.items) {
+      Item()
+    }
+  }
+}
+```
+
+## Order of Operations
+
+The `forEach` operator enforces a specific order:
+
+1. **Element reducer runs first** - The child reducer processes the action
+2. **Parent reducer runs second** - The parent's core logic executes
+
+This ordering ensures that child reducers can handle their actions before a parent might remove them from the collection.
+
+```swift
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // This runs AFTER the child reducer
+  }
+  .forEach(\.items, action: \.items) {
+    Item()  // This runs FIRST
+  }
+}
+```
+
+## Automatic Effect Cancellation
+
+When an element is removed from the collection, `forEach` automatically cancels all effects associated with that element. This prevents memory leaks and ensures that long-running effects don't continue after their associated state is gone.
+
+## Runtime Warnings
+
+If `forEach` receives an action for an element that doesn't exist in the collection, it will emit a runtime warning:
+
+```
+A "forEach" at "Feature.swift:42" received an action for a missing element.
+```
+
+This can happen when:
+- A parent reducer removed the element before the forEach ran
+- An in-flight effect emitted an action after the element was removed
+- An action was sent for a non-existent element ID
+
+## Requirements
+
+- Uses `IdentifiedArray` from the [swift-identified-collections](http://github.com/pointfreeco/swift-identified-collections) library
+- Element state must have a stable, unique ID
+- Actions must be wrapped in `IdentifiedAction` to specify which element they target
+
+## See Also
+
+- `IdentifiedArray` - Collection type that provides safe ID-based access
+- `ifLet` - For embedding reducers over optional state
+- `Scope` - For embedding single child reducers

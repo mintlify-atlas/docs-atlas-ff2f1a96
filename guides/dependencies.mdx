@@ -1,0 +1,255 @@
+---
+title: Dependency Injection
+description: Learn how to register and manage dependencies in your TCA features
+icon: plug
+---
+
+Dependencies in an application are the types and functions that need to interact with outside systems that you do not control. Classic examples include API clients that make network requests, but also seemingly innocuous things such as `UUID` and `Date` initializers, and even clocks.
+
+## Overview
+
+By controlling the dependencies our features need to do their job we gain the ability to completely alter the execution context a feature runs in. This means in tests and Xcode previews you can provide a mock version of an API client that immediately returns some stubbed data rather than making a live network request to a server.
+
+<Note>
+  The dependency management system in the Composable Architecture is driven by the [Dependencies](https://github.com/pointfreeco/swift-dependencies) library. That repository has extensive documentation and articles, and we highly recommend you familiarize yourself with all of that content to best leverage dependencies.
+</Note>
+
+## Registering dependencies
+
+To register a new dependency, you extend `DependencyValues` with a computed property:
+
+```swift
+extension DependencyValues {
+  var apiClient: APIClient {
+    get { self[APIClient.self] }
+    set { self[APIClient.self] = newValue }
+  }
+}
+```
+
+Then define your dependency type by conforming to `DependencyKey`:
+
+```swift
+struct APIClient: DependencyKey {
+  var fetchUser: (Int) async throws -> User
+  var updateUser: (User) async throws -> User
+  
+  static let liveValue = APIClient(
+    fetchUser: { id in
+      // Real network request
+      let (data, _) = try await URLSession.shared.data(
+        from: URL(string: "https://api.example.com/users/\(id)")!
+      )
+      return try JSONDecoder().decode(User.self, from: data)
+    },
+    updateUser: { user in
+      // Real network request
+      // ...
+    }
+  )
+}
+```
+
+## Using dependencies
+
+Once registered, you can access dependencies in your reducers using the `@Dependency` property wrapper:
+
+<Steps>
+  <Step title="Add dependency to reducer">
+    ```swift
+    @Reducer
+    struct Feature {
+      @ObservableState
+      struct State { /* ... */ }
+      enum Action { /* ... */ }
+      
+      @Dependency(\.apiClient) var apiClient
+      
+      var body: some Reducer<State, Action> {
+        // ...
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Use in effects">
+    ```swift
+    var body: some Reducer<State, Action> {
+      Reduce { state, action in
+        switch action {
+        case .loadUser:
+          return .run { send in
+            let user = try await apiClient.fetchUser(42)
+            await send(.userLoaded(user))
+          }
+        // ...
+        }
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Overriding dependencies
+
+You can override dependencies for specific reducers using the `dependency` modifier:
+
+```swift
+@Reducer
+struct Onboarding {
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in 
+      // Additional onboarding logic
+    }
+    Feature()
+      .dependency(\.userDefaults, .mock)
+      .dependency(\.database, .mock)
+  }
+}
+```
+
+This causes the `Feature` reducer to use mock versions of dependencies, perfect for controlled environments like onboarding experiences.
+
+## Dependency contexts
+
+Dependencies automatically adapt to different execution contexts:
+
+<CardGroup cols={2}>
+  <Card title="Live" icon="circle-play">
+    Used when running your app normally. Performs real network requests, file I/O, etc.
+  </Card>
+  <Card title="Preview" icon="eye">
+    Used in Xcode previews. Can provide mock data that displays quickly.
+  </Card>
+  <Card title="Test" icon="flask">
+    Used in tests. Provides controllable, deterministic behavior.
+  </Card>
+  <Card title="Failing" icon="triangle-exclamation">
+    Default fallback that crashes if accessed, ensuring you explicitly handle dependencies.
+  </Card>
+</CardGroup>
+
+## Common dependencies
+
+The library provides several common dependencies out of the box:
+
+### Clock dependencies
+
+```swift
+@Dependency(\.continuousClock) var clock
+
+return .run { send in
+  try await clock.sleep(for: .seconds(1))
+  await send(.timerTick)
+}
+```
+
+### UUID
+
+```swift
+@Dependency(\.uuid) var uuid
+
+state.id = uuid()
+```
+
+### Date
+
+```swift
+@Dependency(\.date) var date
+
+state.timestamp = date.now
+```
+
+### Main queue
+
+```swift
+@Dependency(\.mainQueue) var mainQueue
+
+return .run { send in
+  await mainQueue.sleep(for: .seconds(1))
+  await send(.delayed)
+}
+```
+
+## Testing with dependencies
+
+In tests, you can override dependencies using the `withDependencies` parameter:
+
+```swift
+let store = TestStore(initialState: Feature.State()) {
+  Feature()
+} withDependencies: {
+  $0.apiClient.fetchUser = { _ in
+    User(id: 1, name: "Blob")
+  }
+  $0.continuousClock = ImmediateClock()
+}
+```
+
+<Tip>
+  Always override dependencies in tests to ensure they run quickly and deterministically. Never make real network requests or perform real I/O in tests.
+</Tip>
+
+## Preview dependencies
+
+You can provide mock data for Xcode previews:
+
+```swift
+#Preview {
+  FeatureView(
+    store: Store(initialState: Feature.State()) {
+      Feature()
+    } withDependencies: {
+      $0.apiClient.fetchUser = { _ in
+        User(id: 1, name: "Preview User")
+      }
+    }
+  )
+}
+```
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Make dependencies Sendable">
+    All dependencies should be `Sendable` since they can be used from asynchronous and concurrent contexts. Use `@Sendable` closures for any function-based endpoints:
+    
+    ```swift
+    struct APIClient {
+      var fetch: @Sendable (Int) async throws -> String
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Use live implementations by default">
+    The `liveValue` should be your real, production implementation. Other values like `testValue` and `previewValue` are optional.
+  </Accordion>
+  
+  <Accordion title="Keep interfaces minimal">
+    Only expose the operations your features actually need. A smaller interface is easier to mock and maintain.
+  </Accordion>
+  
+  <Accordion title="Avoid global state">
+    Don't access global state or singletons directly in your reducers. Wrap them in dependencies so they can be controlled in tests.
+  </Accordion>
+</AccordionGroup>
+
+## Advanced: Custom dependency contexts
+
+You can create custom dependency contexts for specific scenarios:
+
+```swift
+extension DependencyValues {
+  static let mock = Self(
+    context: .mock,
+    date: .constant(Date(timeIntervalSince1970: 1234567890)),
+    uuid: .incrementing
+  )
+}
+
+let store = Store(initialState: Feature.State()) {
+  Feature()
+} withDependencies: { .mock }
+```
+
+This allows you to share common dependency configurations across your app.

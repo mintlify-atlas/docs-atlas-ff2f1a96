@@ -1,0 +1,565 @@
+---
+title: "Stack-based Navigation"
+description: "Learn about stack-based navigation with collections, including domain modeling, feature integration, testing, UIKit support, and more"
+---
+
+## Overview
+
+Stack-based navigation models navigation using collections of state. This allows deep-linking by constructing flat collections of data and supports complex, recursive navigation paths.
+
+**Key tools:**
+- `StackState` collection type
+- `StackAction` type
+- `.forEach(_:action:)` reducer operator
+- Custom `NavigationStack` initializer
+
+## Basics
+
+Integrating features into a navigation stack involves two main steps: integrating domains and constructing the `NavigationStack` view.
+
+### Step 1: Define Path Reducer
+
+Create a reducer holding all features that can be pushed onto the stack:
+
+```swift
+@Reducer
+struct RootFeature {
+  // ...
+
+  @Reducer
+  enum Path {
+    case addItem(AddFeature)
+    case detailItem(DetailFeature)
+    case editItem(EditFeature)
+  }
+}
+```
+
+<Note>
+The `Path` reducer is identical to the `Destination` reducer used in tree-based navigation with enums.
+</Note>
+
+### Step 2: Add StackState and StackAction
+
+Hold navigation stack state and actions in the root feature:
+
+```swift
+@Reducer
+struct RootFeature {
+  @ObservableState
+  struct State {
+    var path = StackState<Path.State>()
+    // ...
+  }
+  enum Action {
+    case path(StackActionOf<Path>)
+    // ...
+  }
+}
+```
+
+<Tip>
+`StackActionOf` is a typealias that simplifies the syntax for `StackAction`, which is generic over both state and action.
+</Tip>
+
+### Step 3: Integrate with `.forEach`
+
+Use `.forEach` to integrate path features with the parent:
+
+```swift
+@Reducer
+struct RootFeature {
+  // ...
+
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in 
+      // Core logic for root feature
+    }
+    .forEach(\.path, action: \.path)
+  }
+}
+```
+
+### Step 4: Build NavigationStack View
+
+Use the custom `NavigationStack` initializer that takes a store binding:
+
+```swift
+struct RootView: View {
+  @Bindable var store: StoreOf<RootFeature>
+
+  var body: some View {
+    NavigationStack(
+      path: $store.scope(state: \.path, action: \.path)
+    ) {
+      // Root view of the navigation stack
+    } destination: { store in
+      // A view for each case of the Path.State enum
+    }
+  }
+}
+```
+
+### Step 5: Handle Each Path Case
+
+Use `store.case` to destructure each case and return the appropriate view:
+
+```swift
+NavigationStack(
+  path: $store.scope(state: \.path, action: \.path)
+) {
+  Form {
+    // Root view content
+  }
+} destination: { store in
+  switch store.case {
+  case .addItem(let store):
+    AddView(store: store)
+  case .detailItem(let store):
+    DetailView(store: store)
+  case .editItem(let store):
+    EditView(store: store)
+  }
+}
+```
+
+<Tip>
+Switching on `store.case` gives compile-time guarantees that you've handled all path cases.
+</Tip>
+
+## Pushing Features onto the Stack
+
+There are two primary ways to push features onto the stack:
+
+### 1. Using NavigationLink (Simple)
+
+Use the custom `NavigationLink` initializer with full state:
+
+```swift
+Form {
+  NavigationLink(
+    state: RootFeature.Path.State.detail(DetailFeature.State())
+  ) {
+    Text("Detail")
+  }
+}
+```
+
+When tapped, a `StackAction.push(id:state:)` action is sent, appending to the stack.
+
+<Warning>
+**Drawback:** This approach requires the view to access `Path.State`, meaning it must build all features in the path. This hurts modularity.
+</Warning>
+
+### 2. Using Button + Action (Modular)
+
+Send an action from the child feature:
+
+```swift
+Form {
+  Button("Detail") {
+    store.send(.detailButtonTapped)
+  }
+}
+```
+
+The root feature listens and appends to the path:
+
+```swift
+case .path(.element(id: _, action: .list(.detailButtonTapped))):
+  state.path.append(.detail(DetailFeature.State()))
+  return .none
+```
+
+<Info>
+This approach maintains modularity since the child feature doesn't need to know about `Path.State`.
+</Info>
+
+## Integration
+
+Parent features have instant access to everything in the stack. Detect child actions by destructuring:
+
+```swift
+case let .path(.element(id: id, action: .editItem(.saveButtonTapped))):
+  guard let editItemState = state.path[id: id]?.editItem
+  else { return .none }
+
+  state.path.pop(from: id)
+  return .run { _ in
+    await self.database.save(editItemState.item)
+  }
+```
+
+<Note>
+When destructuring `StackAction.element(id:action:)`, you get both:
+- The action that happened
+- The ID of the element in the stack
+
+`StackState` automatically manages IDs for every feature.
+</Note>
+
+## Dismissal
+
+Dismiss features by mutating `StackState`:
+
+```swift
+case .closeButtonTapped:
+  state.path.popLast()
+  return .none
+```
+
+**Available methods:**
+- `popLast()` - Remove last element
+- `pop(from:)` - Remove from specific ID
+- And more collection methods
+
+### Self-Dismissal from Child
+
+Use `@Dependency(\.dismiss)` to allow children to dismiss themselves:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State { /* ... */ }
+  enum Action { 
+    case closeButtonTapped
+    // ...
+  }
+  @Dependency(\.dismiss) var dismiss
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .closeButtonTapped:
+        return .run { _ in await self.dismiss() }
+      // ...
+      }
+    }
+  }
+}
+```
+
+When `dismiss()` is called, a `StackAction.popFrom(id:)` action is sent to remove the feature from the stack.
+
+<Warning>
+**Important:** Never send actions after calling `dismiss()`:
+
+```swift
+return .run { send in 
+  await self.dismiss()
+  await send(.tick)  // ⚠️ Don't do this!
+}
+```
+
+The feature's state is no longer in the stack, causing runtime warnings and test failures.
+</Warning>
+
+<Info>
+SwiftUI's `@Environment(\.dismiss)` and TCA's `@Dependency(\.dismiss)` are different types:
+- SwiftUI's: Use in views only
+- TCA's: Use in reducers only
+</Info>
+
+## Testing
+
+Using TCA's tools makes testing navigation stacks straightforward. Non-exhaustive testing is especially useful.
+
+### Example: Testing Dismissal
+
+Counter feature that dismisses when count ≥ 5:
+
+```swift
+@Reducer
+struct CounterFeature {
+  @ObservableState
+  struct State: Equatable {
+    var count = 0
+  }
+  enum Action {
+    case decrementButtonTapped
+    case incrementButtonTapped
+  }
+
+  @Dependency(\.dismiss) var dismiss
+
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .decrementButtonTapped:
+        state.count -= 1
+        return .none
+
+      case .incrementButtonTapped:
+        state.count += 1
+        return state.count >= 5
+          ? .run { _ in await self.dismiss() }
+          : .none
+      }
+    }
+  }
+}
+```
+
+Parent feature:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State: Equatable {
+    var path = StackState<Path.State>()
+  }
+  enum Action {
+    case path(StackActionOf<Path>)
+  }
+
+  @Reducer  
+  struct Path {
+    enum State: Equatable { case counter(CounterFeature.State) }
+    enum Action { case counter(CounterFeature.Action) }
+    var body: some ReducerOf<Self> {
+      Scope(state: \.counter, action: \.counter) { CounterFeature() }
+    }
+  }
+
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      // Logic and behavior for core feature.
+    }
+    .forEach(\.path, action: \.path) { Path() }
+  }
+}
+```
+
+### Test with IDs
+
+Construct a test store with a counter already on the stack:
+
+```swift
+@Test
+func dismissal() {
+  let store = TestStore(
+    initialState: Feature.State(
+      path: StackState([
+        CounterFeature.State(count: 3)
+      ])
+    )
+  ) {
+    CounterFeature()
+  }
+}
+```
+
+<Note>
+`StackState` automatically manages IDs. In tests, IDs are integers starting at 0 and incrementing for each feature pushed.
+</Note>
+
+Send actions using ID 0:
+
+```swift
+await store.send(\.path[id: 0].counter.incrementButtonTapped) {
+  // ...
+}
+```
+
+### Two Ways to Assert State Changes
+
+**Option 1: Using `XCTModify`**
+
+```swift
+await store.send(\.path[id: 0].counter.incrementButtonTapped) {
+  XCTModify(&$0.path[id: 0], case: \.counter) {
+    $0.count = 4
+  }
+}
+```
+
+`XCTModify` takes an `inout` enum, extracts the case payload, lets you mutate it, and embeds it back.
+
+**Option 2: Using Double Subscript**
+
+```swift
+await store.send(\.path[id: 0].counter.incrementButtonTapped) {
+  $0.path[id: 0, case: \.counter]?.count = 4
+}
+```
+
+Simultaneously subscripts into an ID and a case of the enum.
+
+<Tip>
+Use `XCTModify` for many mutations, double subscript for simple ones.
+</Tip>
+
+### Complete Test
+
+```swift
+@Test
+func dismissal() {
+  let store = TestStore(
+    initialState: Feature.State(
+      path: StackState([
+        CounterFeature.State(count: 3)
+      ])
+    )
+  ) {
+    CounterFeature()
+  }
+
+  await store.send(\.path[id: 0].counter.incrementButtonTapped) {
+    XCTModify(&$0.path[id: 0], case: \.counter) {
+      $0.count = 4
+    }
+  }
+  
+  await store.send(\.path[id: 0].counter.incrementButtonTapped) {
+    XCTModify(&$0.path[id: 0], case: \.counter) {
+      $0.count = 5
+    }
+  }
+  
+  await store.receive(\.path.popFrom) {
+    $0.path[id: 0] = nil
+  }
+}
+```
+
+### Receiving Child Actions
+
+To assert a specific child action is received, use subscript on the case key path:
+
+```swift
+await store.receive(\.path[id: 0].counter.response) {
+  // ...
+}
+```
+
+### Non-Exhaustive Test
+
+Turn off exhaustivity for high-level assertions:
+
+```swift
+@Test
+func dismissal() {
+  let store = TestStore(
+    initialState: Feature.State(
+      path: StackState([
+        CounterFeature.State(count: 3)
+      ])
+    )
+  ) {
+    CounterFeature()
+  }
+  store.exhaustivity = .off
+
+  await store.send(\.path[id: 0].counter.incrementButtonTapped)
+  await store.send(\.path[id: 0].counter.incrementButtonTapped)
+  await store.receive(\.path.popFrom)
+}
+```
+
+<Tip>
+Non-exhaustive tests are more concise and resilient to changes you don't care about.
+</Tip>
+
+## StackState vs NavigationPath
+
+SwiftUI provides `NavigationPath`, so why use `StackState`?
+
+### NavigationPath
+
+**Pros:**
+- Type-erased list of any `Hashable` data
+- Maximal feature decoupling
+
+**Cons:**
+- Limited API: only `append`, `removeLast`, and `count`
+- Cannot insert/remove from middle
+- Cannot iterate over elements
+- Hard to analyze stack contents
+
+```swift
+var path = NavigationPath()
+path.append(1)
+path.append("Hello")
+path.append(false)
+path.count  // 3
+
+for element in path {  // 🛑 Not allowed
+}
+```
+
+### StackState
+
+**Pros:**
+- Conforms to `Collection`, `RandomAccessCollection`, `RangeReplaceableCollection`
+- Access to many collection manipulation methods
+- Can iterate, insert, remove anywhere
+- Automatic stable identifier management
+- Data doesn't need to be `Hashable`
+
+**Cons:**
+- Fully statically typed (less flexible than type erasure)
+
+```swift
+var stack = StackState<Path.State>()
+stack.append(.detail(...))
+stack.append(.edit(...))
+
+// Iterate
+for element in stack {
+  // Process each feature
+}
+
+// Insert/remove anywhere
+stack.insert(.add(...), at: 1)
+stack.remove(at: 0)
+```
+
+<Info>
+`StackState` balances runtime flexibility with static, compile-time guarantees—perfect for TCA navigation.
+</Info>
+
+## UIKit
+
+TCA provides `NavigationStackController` for state-driven `UINavigationController`:
+
+```swift
+class AppController: NavigationStackController {
+  private var store: StoreOf<AppFeature>!
+
+  convenience init(store: StoreOf<AppFeature>) {
+    @UIBindable var store = store
+
+    self.init(path: $store.scope(state: \.path, action: \.path)) {
+      RootViewController(store: store)
+    } destination: { store in 
+      switch store.case {
+      case .addItem(let store):
+        AddViewController(store: store)
+      case .detailItem(let store):
+        DetailViewController(store: store)
+      case .editItem(let store):
+        EditViewController(store: store)
+      }
+    }
+
+    self.store = store
+  }
+}
+```
+
+<Tip>
+Model your domains using `StackState` as described above, then use `NavigationStackController` to implement UIKit navigation.
+</Tip>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Navigation Overview" icon="compass" href="/navigation/overview">
+    Learn about navigation concepts and patterns
+  </Card>
+  <Card title="Tree-based Navigation" icon="tree" href="/navigation/tree-based">
+    Learn about navigation with optionals and enums
+  </Card>
+</CardGroup>

@@ -1,0 +1,354 @@
+---
+title: Swift Concurrency Integration
+description: Learn how to write safe, concurrent effects using Swift's structured concurrency
+icon: bolt
+---
+
+Swift's structured concurrency provides many warnings for situations in which you might be using types and functions that are not thread-safe. In Swift 6, most of these warnings will become errors, so you need to know how to prove to the compiler that your types are safe to use concurrently.
+
+## Overview
+
+The primary way to create an `Effect` in the library is via `Effect.run`, which takes a `@Sendable`, asynchronous closure. This restricts the types of closures you can use for your effects.
+
+<Note>
+  The closure can only capture `Sendable` variables that are bound with `let`. Mutable variables and non-`Sendable` types are not allowed.
+</Note>
+
+There are two primary scenarios where you'll encounter this restriction:
+
+1. Accessing state from within an effect
+2. Accessing a dependency from within an effect
+
+## Accessing state in an effect
+
+Reducers execute with a mutable, `inout` state variable, which cannot be accessed from `@Sendable` closures.
+
+### The problem
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State { /* ... */ }
+  enum Action { /* ... */ }
+
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .buttonTapped:
+        return .run { send in
+          try await Task.sleep(for: .seconds(1))
+          await send(.delayed(state.count))
+          // 🛑 Mutable capture of 'inout' parameter 'state' is
+          //    not allowed in concurrently-executing code
+        }
+      }
+    }
+  }
+}
+```
+
+### The solution
+
+Explicitly capture the state as an immutable value:
+
+<Tabs>
+  <Tab title="Capture full state">
+    ```swift
+    return .run { [state] send in
+      try await Task.sleep(for: .seconds(1))
+      await send(.delayed(state.count))  // ✅
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Capture specific values">
+    ```swift
+    return .run { [count = state.count] send in
+      try await Task.sleep(for: .seconds(1))
+      await send(.delayed(count))  // ✅
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Capturing just the values you need makes the closure more focused and explicit about its dependencies.
+</Tip>
+
+## Accessing dependencies in an effect
+
+Dependencies can be used from asynchronous and concurrent contexts, so they must be `Sendable`.
+
+### Registering dependencies
+
+When extending `DependencyValues`, you'll get warnings if your dependency isn't `Sendable`:
+
+```swift
+extension DependencyValues {
+  var factClient: FactClient {
+    get { self[FactClient.self] }
+    // ⚠️ Type 'FactClient' does not conform to the 'Sendable' protocol
+    set { self[FactClient.self] = newValue }
+    // ⚠️ Type 'FactClient' does not conform to the 'Sendable' protocol
+  }
+}
+```
+
+### Making dependencies Sendable
+
+To fix this, make sure the interface type only holds onto `Sendable` data, and annotate closure-based endpoints as `@Sendable`:
+
+<Steps>
+  <Step title="Add @Sendable to closures">
+    ```swift
+    struct FactClient {
+      var fetch: @Sendable (Int) async throws -> String
+    }
+    ```
+  </Step>
+  
+  <Step title="Conform to Sendable">
+    If your dependency only contains `Sendable` properties and `@Sendable` closures, Swift will automatically infer `Sendable` conformance. Otherwise, explicitly conform:
+    
+    ```swift
+    struct FactClient: Sendable {
+      var fetch: @Sendable (Int) async throws -> String
+    }
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Any closures you use to construct `FactClient` values must now be `@Sendable`, which restricts what they can capture.
+</Warning>
+
+## Common patterns
+
+### Passing state to async work
+
+<CodeGroup>
+```swift Capturing state
+case .loadData:
+  return .run { [count = state.count, name = state.name] send in
+    let data = await fetchData(count: count, name: name)
+    await send(.dataLoaded(data))
+  }
+```
+
+```swift Capturing IDs
+case .deleteItem(let id):
+  return .run { send in
+    try await database.delete(id)
+    await send(.itemDeleted(id))
+  }
+```
+</CodeGroup>
+
+### Using dependencies in effects
+
+```swift
+@Reducer
+struct Feature {
+  @Dependency(\.apiClient) var apiClient
+  @Dependency(\.continuousClock) var clock
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .fetchUser:
+        return .run { send in
+          try await clock.sleep(for: .seconds(1))
+          let user = try await apiClient.fetchUser(42)
+          await send(.userLoaded(user))
+        }
+      }
+    }
+  }
+}
+```
+
+### Shared state in effects
+
+Shared state is already `Sendable`, so you can capture it directly:
+
+```swift
+case .incrementLater:
+  return .run { [sharedCount = state.$count] send in
+    try await Task.sleep(for: .seconds(1))
+    await sharedCount.withLock { $0 += 1 }
+  }
+```
+
+## Actor isolation
+
+Reducers in TCA are `@MainActor` isolated by default, which means:
+
+<CardGroup cols={2}>
+  <Card title="State access is safe" icon="shield-check">
+    All state mutations happen on the main actor
+  </Card>
+  <Card title="Effects run elsewhere" icon="gears">
+    `.run` effects execute in the cooperative thread pool
+  </Card>
+  <Card title="Send is main actor" icon="arrow-right">
+    Sending actions back always happens on the main actor
+  </Card>
+  <Card title="Views are synchronized" icon="eye">
+    SwiftUI views observe state on the main actor
+  </Card>
+</CardGroup>
+
+### Crossing actor boundaries
+
+When effects need to send actions, they automatically hop to the main actor:
+
+```swift
+return .run { send in
+  // Running on background thread
+  let data = await heavyComputation()
+  
+  // Automatically hops to main actor
+  await send(.dataLoaded(data))
+}
+```
+
+## Testing concurrent code
+
+When testing features with concurrency:
+
+<Steps>
+  <Step title="Use controlled clocks">
+    ```swift
+    let store = TestStore(initialState: Feature.State()) {
+      Feature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+    }
+    ```
+  </Step>
+  
+  <Step title="Assert on received actions">
+    ```swift
+    await store.send(.fetchUser)
+    await store.receive(\.userLoaded) {
+      $0.user = User(id: 1, name: "Blob")
+    }
+    ```
+  </Step>
+  
+  <Step title="Ensure effects complete">
+    The test store automatically ensures all effects finish before the test ends.
+  </Step>
+</Steps>
+
+## Swift 6 considerations
+
+In Swift 6, concurrency warnings become errors. To prepare:
+
+<AccordionGroup>
+  <Accordion title="Enable strict concurrency checking">
+    In your package or Xcode project, enable complete concurrency checking to get warnings now:
+    
+    ```swift
+    // Package.swift
+    swiftSettings: [
+      .enableUpcomingFeature("StrictConcurrency")
+    ]
+    ```
+  </Accordion>
+  
+  <Accordion title="Make dependencies Sendable">
+    Ensure all dependencies conform to `Sendable` and use `@Sendable` closures.
+  </Accordion>
+  
+  <Accordion title="Capture state explicitly">
+    Always use capture lists when accessing state in effects:
+    
+    ```swift
+    return .run { [state] send in  // ✅
+      // ...
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Avoid global state">
+    Don't access global mutable state. Wrap it in dependencies.
+  </Accordion>
+</AccordionGroup>
+
+## Common errors and fixes
+
+<CodeGroup>
+```swift Error: Mutable capture
+// ❌
+return .run { send in
+  await send(.delayed(state.count))
+}
+
+// ✅
+return .run { [count = state.count] send in
+  await send(.delayed(count))
+}
+```
+
+```swift Error: Non-Sendable capture
+// ❌
+let client = NonSendableClient()
+return .run { send in
+  await client.fetch()
+}
+
+// ✅
+@Dependency(\.client) var client  // Make it a dependency
+return .run { send in
+  await self.client.fetch()
+}
+```
+
+```swift Error: Non-Sendable dependency
+// ❌
+struct APIClient {
+  var fetch: (Int) async throws -> String  // Not @Sendable
+}
+
+// ✅
+struct APIClient: Sendable {
+  var fetch: @Sendable (Int) async throws -> String
+}
+```
+</CodeGroup>
+
+## Best practices
+
+<CardGroup cols={2}>
+  <Card title="Always capture state explicitly" icon="brackets-curly">
+    Use capture lists even when it seems unnecessary
+  </Card>
+  <Card title="Make dependencies Sendable" icon="check-double">
+    Annotate all closures with `@Sendable`
+  </Card>
+  <Card title="Avoid global state" icon="ban">
+    Wrap globals in dependencies for testability
+  </Card>
+  <Card title="Use actor isolation wisely" icon="shield">
+    Let TCA handle main actor isolation automatically
+  </Card>
+</CardGroup>
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="Swift Concurrency" icon="swift" href="https://docs.swift.org/swift-book/LanguageGuide/Concurrency.html">
+    Official Swift concurrency documentation
+  </Card>
+  <Card title="Dependencies" icon="plug" href="/guides/dependencies">
+    Learn more about dependency injection in TCA
+  </Card>
+  <Card title="Testing" icon="flask" href="/guides/testing">
+    Learn how to test concurrent features
+  </Card>
+  <Card title="Effects" icon="bolt">
+    Deep dive into the Effect type
+  </Card>
+</CardGroup>

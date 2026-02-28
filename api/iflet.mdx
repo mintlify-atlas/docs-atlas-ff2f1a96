@@ -1,0 +1,338 @@
+---
+title: IfLet
+description: Embeds a child reducer that operates on optional state in a parent domain
+---
+
+# IfLet
+
+The `ifLet` operator embeds a child reducer in a parent domain that operates on an optional property of parent state. It's commonly used for modeling features that can be presented and dismissed, such as sheets, popovers, drill-down navigation, and alerts.
+
+## Method Signature
+
+```swift
+public func ifLet<WrappedState, WrappedAction, Wrapped: Reducer<WrappedState, WrappedAction>>(
+  _ toWrappedState: WritableKeyPath<State, WrappedState?>,
+  action toWrappedAction: CaseKeyPath<Action, WrappedAction>,
+  @ReducerBuilder<WrappedState, WrappedAction> then wrapped: () -> Wrapped,
+  fileID: StaticString = #fileID,
+  filePath: StaticString = #filePath,
+  line: UInt = #line,
+  column: UInt = #column
+) -> some Reducer<State, Action>
+```
+
+**Parameters:**
+- `toWrappedState`: A writable key path from parent state to a property containing optional child state
+- `toWrappedAction`: A case path from parent action to a case containing child actions
+- `wrapped`: A reducer builder closure that describes the child reducer to run when state is non-nil
+
+**Returns:** A reducer that combines the child reducer with the parent reducer
+
+## Special Overload for Alerts
+
+```swift
+public func ifLet<WrappedState: _EphemeralState, WrappedAction>(
+  _ toWrappedState: WritableKeyPath<State, WrappedState?>,
+  action toWrappedAction: CaseKeyPath<Action, WrappedAction>,
+  fileID: StaticString = #fileID,
+  filePath: StaticString = #filePath,
+  line: UInt = #line,
+  column: UInt = #column
+) -> some Reducer<State, Action>
+```
+
+A special overload for alerts and confirmation dialogs that does not require a child reducer, since these states are ephemeral and automatically nil out after actions are sent.
+
+## Usage
+
+### Basic optional child feature
+
+```swift
+@Reducer
+struct Detail {
+  struct State {
+    var description: String
+  }
+  
+  enum Action {
+    case closeButtonTapped
+    case descriptionChanged(String)
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .closeButtonTapped:
+        // Parent will handle dismissal
+        return .none
+      case let .descriptionChanged(description):
+        state.description = description
+        return .none
+      }
+    }
+  }
+}
+
+@Reducer
+struct Feature {
+  struct State {
+    var detail: Detail.State?
+    var items: [String] = []
+  }
+  
+  enum Action {
+    case detail(Detail.Action)
+    case showDetailTapped
+    case hideDetail
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .detail(.closeButtonTapped):
+        state.detail = nil
+        return .none
+        
+      case .detail:
+        // Other detail actions handled by child
+        return .none
+        
+      case .showDetailTapped:
+        state.detail = Detail.State(description: "")
+        return .none
+        
+      case .hideDetail:
+        state.detail = nil
+        return .none
+      }
+    }
+    .ifLet(\.detail, action: \.detail) {
+      Detail()
+    }
+  }
+}
+```
+
+### Sheet presentation with effects
+
+```swift
+@Reducer
+struct EditForm {
+  struct State {
+    var name: String
+    var email: String
+    var isSaving = false
+  }
+  
+  enum Action {
+    case nameChanged(String)
+    case emailChanged(String)
+    case saveButtonTapped
+    case saveResponse(Result<Void, Error>)
+  }
+  
+  @Dependency(\.apiClient) var apiClient
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case let .nameChanged(name):
+        state.name = name
+        return .none
+        
+      case let .emailChanged(email):
+        state.email = email
+        return .none
+        
+      case .saveButtonTapped:
+        state.isSaving = true
+        return .run { [state] send in
+          try await apiClient.updateProfile(name: state.name, email: state.email)
+          await send(.saveResponse(.success(())))
+        } catch: { error, send in
+          await send(.saveResponse(.failure(error)))
+        }
+        
+      case .saveResponse(.success):
+        state.isSaving = false
+        // Parent will dismiss sheet
+        return .none
+        
+      case .saveResponse(.failure):
+        state.isSaving = false
+        // Show error
+        return .none
+      }
+    }
+  }
+}
+
+@Reducer
+struct Profile {
+  struct State {
+    var editForm: EditForm.State?
+    var name: String
+    var email: String
+  }
+  
+  enum Action {
+    case editForm(EditForm.Action)
+    case editButtonTapped
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .editForm(.saveResponse(.success)):
+        // Update profile with saved data
+        if let form = state.editForm {
+          state.name = form.name
+          state.email = form.email
+        }
+        // Dismiss the form
+        state.editForm = nil
+        return .none
+        
+      case .editForm:
+        return .none
+        
+      case .editButtonTapped:
+        state.editForm = EditForm.State(
+          name: state.name,
+          email: state.email
+        )
+        return .none
+      }
+    }
+    .ifLet(\.editForm, action: \.editForm) {
+      EditForm()
+    }
+  }
+}
+```
+
+### Alerts and confirmation dialogs
+
+```swift
+@Reducer
+struct Feature {
+  struct State {
+    @Presents var alert: AlertState<Action.Alert>?
+    var items: [String] = []
+  }
+  
+  enum Action {
+    case alert(PresentationAction<Alert>)
+    case deleteButtonTapped(String)
+    case confirmDelete(String)
+    
+    enum Alert {
+      case confirmDeletion
+    }
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case let .deleteButtonTapped(item):
+        state.alert = AlertState {
+          TextState("Delete this item?")
+        } actions: {
+          ButtonState(role: .destructive, action: .confirmDeletion) {
+            TextState("Delete")
+          }
+        }
+        return .none
+        
+      case .alert(.presented(.confirmDeletion)):
+        // Perform deletion
+        return .none
+        
+      case .alert:
+        return .none
+        
+      case let .confirmDelete(item):
+        state.items.removeAll { $0 == item }
+        return .none
+      }
+    }
+    .ifLet(\.alert, action: \.alert)
+  }
+}
+```
+
+## Order of Operations
+
+The `ifLet` operator enforces a specific order:
+
+1. **Child reducer runs first** - The child processes the action while its state is still available
+2. **Parent reducer runs second** - The parent can then modify or nil out child state
+
+This ensures child reducers can always handle their actions before being dismissed.
+
+```swift
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // This runs AFTER the child reducer
+    // Safe to nil out child state here
+  }
+  .ifLet(\.child, action: \.child) {
+    Child()  // This runs FIRST
+  }
+}
+```
+
+## Automatic Behavior
+
+The `ifLet` operator provides several automatic features:
+
+### 1. Effect Cancellation
+
+When child state is set to `nil`, all child effects are automatically canceled. This prevents memory leaks and ensures long-running effects don't continue after dismissal.
+
+### 2. Ephemeral State Cleanup
+
+For alerts and confirmation dialogs (types conforming to `_EphemeralState`), the state is automatically set to `nil` after any child action is processed. This matches the typical behavior of alerts that dismiss immediately after interaction.
+
+## Runtime Warnings
+
+If `ifLet` receives a child action when child state is `nil`, it will emit a runtime warning:
+
+```
+An "ifLet" at "Feature.swift:50" received a child action when child state was "nil".
+```
+
+This typically happens when:
+- A parent reducer set child state to `nil` before the ifLet ran
+- An in-flight effect emitted an action after state became `nil`
+- An action was sent while state was `nil`
+
+## SwiftUI Integration
+
+Use `IfLetStore` in SwiftUI to observe and present views conditionally:
+
+```swift
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    WithViewStore(store, observe: { $0 }) { viewStore in
+      Button("Show Detail") {
+        viewStore.send(.showDetailTapped)
+      }
+      .sheet(
+        store: store.scope(state: \.detail, action: \.detail)
+      ) { detailStore in
+        DetailView(store: detailStore)
+      }
+    }
+  }
+}
+```
+
+## See Also
+
+- `Scope` - For embedding non-optional child state
+- `forEach` - For embedding reducers over collections
+- `@Presents` - Property wrapper for optional presentation state
+- `PresentationAction` - Action type for presented features

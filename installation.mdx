@@ -1,0 +1,186 @@
+---
+title: Installation
+description: Add the Composable Architecture to your Xcode project using Swift Package Manager
+---
+
+# Installation
+
+The Composable Architecture can be added to your Xcode project using Swift Package Manager.
+
+## Requirements
+
+Before installing, ensure your project meets the minimum platform requirements:
+
+- iOS 16.0+
+- macOS 13.0+
+- tvOS 16.0+
+- watchOS 9.0+
+- visionOS 1.0+
+
+## Swift Package Manager
+
+<Steps>
+  <Step title="Open package dependencies">
+    In Xcode, navigate to **File** → **Add Package Dependencies...**
+  </Step>
+  
+  <Step title="Enter the repository URL">
+    Enter the following URL into the package repository URL text field:
+    
+    ```
+    https://github.com/pointfreeco/swift-composable-architecture
+    ```
+  </Step>
+  
+  <Step title="Add to your target">
+    Depending on how your project is structured, choose one of the following options:
+    
+    ### Single application target
+    
+    If you have a single application target that needs access to the library, add **ComposableArchitecture** directly to your application target.
+    
+    ### Multiple targets
+    
+    If you want to use this library from multiple Xcode targets, or mix Xcode targets and SPM targets, you must create a shared framework that depends on **ComposableArchitecture** and then depend on that framework in all of your targets.
+    
+    <Note>
+      For an example of using TCA with multiple modules, check out the [Tic-Tac-Toe demo](https://github.com/pointfreeco/swift-composable-architecture/tree/main/Examples/TicTacToe), which splits features into modules and consumes them using a shared Swift package.
+    </Note>
+  </Step>
+</Steps>
+
+## Package.swift
+
+If you're building a Swift package, you can add the Composable Architecture as a dependency in your `Package.swift` file:
+
+```swift Package.swift
+let package = Package(
+  name: "MyPackage",
+  platforms: [
+    .iOS(.v16),
+    .macOS(.v13),
+    .tvOS(.v16),
+    .watchOS(.v9),
+  ],
+  dependencies: [
+    .package(
+      url: "https://github.com/pointfreeco/swift-composable-architecture",
+      from: "1.0.0"
+    )
+  ],
+  targets: [
+    .target(
+      name: "MyTarget",
+      dependencies: [
+        .product(
+          name: "ComposableArchitecture",
+          package: "swift-composable-architecture"
+        )
+      ]
+    )
+  ]
+)
+```
+
+## Dependencies
+
+The Composable Architecture brings in several dependencies that provide essential functionality:
+
+<AccordionGroup>
+  <Accordion title="Core dependencies">
+    - **swift-dependencies**: Dependency management system
+    - **swift-identified-collections**: Collection types with stable identity
+    - **swift-case-paths**: Key path abstractions for enum cases
+    - **swift-perception**: Observation tools for iOS &lt;17
+  </Accordion>
+  
+  <Accordion title="Testing dependencies">
+    - **swift-custom-dump**: Enhanced dump output for tests
+    - **xctest-dynamic-overlay**: XCTest support in library code
+  </Accordion>
+  
+  <Accordion title="Effect dependencies">
+    - **combine-schedulers**: Testable Combine schedulers
+    - **swift-clocks**: Testable time-based operations
+    - **swift-concurrency-extras**: Swift concurrency utilities
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  All dependencies are automatically managed by Swift Package Manager. You don't need to add them individually.
+</Note>
+
+## Import the library
+
+Once installed, import the Composable Architecture in your Swift files:
+
+```swift
+import ComposableArchitecture
+```
+
+## Verify installation
+
+To verify the installation was successful, try creating a simple reducer:
+
+```swift
+import ComposableArchitecture
+
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State: Equatable {
+    var count = 0
+  }
+  
+  enum Action {
+    case incrementButtonTapped
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .incrementButtonTapped:
+        state.count += 1
+        return .none
+      }
+    }
+  }
+}
+```
+
+If this compiles without errors, the installation was successful!
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Build errors about missing types">
+    Make sure you've imported `ComposableArchitecture` at the top of your file:
+    
+    ```swift
+    import ComposableArchitecture
+    ```
+  </Accordion>
+  
+  <Accordion title="Deployment target errors">
+    Verify your deployment target meets the minimum requirements:
+    - iOS 16.0+
+    - macOS 13.0+
+    - tvOS 16.0+
+    - watchOS 9.0+
+  </Accordion>
+  
+  <Accordion title="Package resolution failures">
+    Try these steps:
+    1. In Xcode, go to **File** → **Packages** → **Reset Package Caches**
+    2. Clean the build folder (**Product** → **Clean Build Folder**)
+    3. Restart Xcode
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+Now that you've installed the Composable Architecture, you're ready to build your first feature!
+
+<Card title="Quick start guide" icon="rocket" href="/quickstart">
+  Follow the quick start guide to build a complete feature with state management, side effects, and tests
+</Card>

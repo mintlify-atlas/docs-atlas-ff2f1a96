@@ -1,0 +1,135 @@
+---
+title: Introduction
+description: Build applications in a consistent and understandable way with composition, testing, and ergonomics in mind
+---
+
+# The Composable Architecture
+
+The Composable Architecture (TCA, for short) is a library for building applications in a consistent and understandable way, with composition, testing, and ergonomics in mind. It can be used in SwiftUI, UIKit, and more, and on any Apple platform (iOS, macOS, iPadOS, visionOS, tvOS, and watchOS).
+
+## What problems does TCA solve?
+
+This library provides a few core tools that can be used to build applications of varying purpose and complexity. It provides compelling stories that you can follow to solve many problems you encounter day-to-day when building applications.
+
+<CardGroup cols={2}>
+  <Card title="State management" icon="database">
+    Manage the state of your application using simple value types, and share state across many screens so that mutations in one screen can be immediately observed in another screen.
+  </Card>
+  
+  <Card title="Composition" icon="puzzle-piece">
+    Break down large features into smaller components that can be extracted to their own isolated modules and be easily glued back together to form the feature.
+  </Card>
+  
+  <Card title="Side effects" icon="network-wired">
+    Let certain parts of the application talk to the outside world in the most testable and understandable way possible.
+  </Card>
+  
+  <Card title="Testing" icon="flask">
+    Not only test a feature built in the architecture, but also write integration tests for features that have been composed of many parts, and write end-to-end tests to understand how side effects influence your application.
+  </Card>
+</CardGroup>
+
+## Core concepts
+
+To build a feature using the Composable Architecture you define some types and values that model your domain:
+
+### State
+
+A type that describes the data your feature needs to perform its logic and render its UI.
+
+```swift
+@ObservableState
+struct State: Equatable {
+  var count = 0
+  var numberFact: String?
+}
+```
+
+### Action
+
+A type that represents all of the actions that can happen in your feature, such as user actions, notifications, event sources and more.
+
+```swift
+enum Action {
+  case decrementButtonTapped
+  case incrementButtonTapped
+  case numberFactButtonTapped
+  case numberFactResponse(String)
+}
+```
+
+### Reducer
+
+A function that describes how to evolve the current state of the app to the next state given an action. The reducer is also responsible for returning any effects that should be run, such as API requests, which can be done by returning an `Effect` value.
+
+```swift
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    switch action {
+    case .incrementButtonTapped:
+      state.count += 1
+      return .none
+    case .decrementButtonTapped:
+      state.count -= 1
+      return .none
+    // ...
+    }
+  }
+}
+```
+
+### Store
+
+The runtime that actually drives your feature. You send all user actions to the store so that the store can run the reducer and effects, and you can observe state changes in the store so that you can update UI.
+
+```swift
+let store: StoreOf<Feature>
+```
+
+## Benefits
+
+The benefits of using the Composable Architecture are:
+
+- **Instant testability**: You will instantly unlock testability of your feature without additional work.
+- **Modular design**: You will be able to break large, complex features into smaller domains that can be glued together.
+- **Consistent patterns**: A uniform approach to state mutations instead of scattering logic across observable objects and UI closures.
+- **Concise side effects**: A clear, expressive way of handling side effects like API requests and database operations.
+- **Comprehensive testing**: Write unit tests, integration tests, and end-to-end tests with confidence.
+
+## Platform support
+
+The Composable Architecture supports:
+
+- iOS 16+
+- macOS 13+
+- tvOS 16+
+- watchOS 9+
+- visionOS 1+
+
+It works seamlessly with both SwiftUI and UIKit.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add TCA to your project using Swift Package Manager
+  </Card>
+  
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Build your first feature with a step-by-step guide
+  </Card>
+  
+  <Card title="Examples" icon="code" href="https://github.com/pointfreeco/swift-composable-architecture/tree/main/Examples">
+    Explore example applications demonstrating TCA patterns
+  </Card>
+  
+  <Card title="Point-Free videos" icon="video" href="https://www.pointfree.co/collections/tours/composable-architecture-1-0">
+    Watch the complete video tour of the architecture
+  </Card>
+</CardGroup>
+
+## Learn more
+
+The Composable Architecture was designed over the course of many episodes on [Point-Free](https://www.pointfree.co), a video series exploring advanced programming topics in the Swift language.
+
+You can watch the complete [episode collection](https://www.pointfree.co/collections/composable-architecture) and a dedicated [multipart tour](https://www.pointfree.co/collections/tours/composable-architecture-1-0) of the architecture from scratch.

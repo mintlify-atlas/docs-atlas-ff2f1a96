@@ -1,0 +1,148 @@
+---
+title: WithViewStore
+description: A deprecated SwiftUI view for observing store state changes (use @ObservableState instead)
+group: SwiftUI Integration
+---
+
+<Warning>
+  `WithViewStore` is deprecated. Use `@ObservableState` instead for better performance and simpler code. See the [migration guide](https://swiftpackageindex.com/pointfreeco/swift-composable-architecture/main/documentation/composablearchitecture/migratingto1.7#Using-ObservableState) for more information.
+</Warning>
+
+`WithViewStore` was a SwiftUI view that allowed you to observe store state changes and build UI that reactively updates. It has been superseded by Swift's Observation framework and the `@ObservableState` macro.
+
+## Declaration
+
+```swift
+public struct WithViewStore<ViewState, ViewAction, Content: View>: View
+```
+
+## Overview
+
+`WithViewStore` transformed a `Store` into a `ViewStore`, which was an `ObservableObject` that SwiftUI could observe. This pattern is no longer necessary with modern TCA and Swift's Observation framework.
+
+### Legacy Usage (Deprecated)
+
+```swift
+struct CounterView: View {
+  let store: StoreOf<Counter>
+  
+  var body: some View {
+    WithViewStore(store, observe: { $0 }) { viewStore in
+      HStack {
+        Button("-") { viewStore.send(.decrement) }
+        Text("\(viewStore.count)")
+        Button("+") { viewStore.send(.increment) }
+      }
+    }
+  }
+}
+```
+
+### Modern Approach (Recommended)
+
+With `@ObservableState`, you can directly access store state without `WithViewStore`:
+
+```swift
+@Reducer
+struct Counter {
+  @ObservableState
+  struct State: Equatable {
+    var count = 0
+  }
+  
+  enum Action {
+    case increment
+    case decrement
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .increment:
+        state.count += 1
+        return .none
+      case .decrement:
+        state.count -= 1
+        return .none
+      }
+    }
+  }
+}
+
+struct CounterView: View {
+  let store: StoreOf<Counter>
+  
+  var body: some View {
+    HStack {
+      Button("-") { store.send(.decrement) }
+      Text("\(store.count)")
+      Button("+") { store.send(.increment) }
+    }
+  }
+}
+```
+
+## Parameters
+
+### Legacy WithViewStore Parameters
+
+- `store`: The store to observe
+- `observe`: A function that transforms the store's state into view state
+- `removeDuplicates`: An optional function to determine when state changes should trigger view updates
+- `content`: A view builder that receives the `ViewStore` and returns the content view
+
+## Migration Guide
+
+### Step 1: Add @ObservableState
+
+Add the `@ObservableState` macro to your reducer's state:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState  // Add this
+  struct State {
+    var value: Int = 0
+  }
+  // ...
+}
+```
+
+### Step 2: Remove WithViewStore
+
+Replace `WithViewStore` with direct store access:
+
+```swift
+// Before
+WithViewStore(store, observe: { $0 }) { viewStore in
+  Text("\(viewStore.value)")
+}
+
+// After
+Text("\(store.value)")
+```
+
+### Step 3: Update Send Calls
+
+Change `viewStore.send` to `store.send`:
+
+```swift
+// Before
+Button("Tap") { viewStore.send(.buttonTapped) }
+
+// After
+Button("Tap") { store.send(.buttonTapped) }
+```
+
+## Benefits of Migration
+
+- **Better Performance**: Swift's Observation framework is more efficient than `ObservableObject`
+- **Less Boilerplate**: No need to wrap views in `WithViewStore`
+- **Simpler Code**: Direct property access on stores
+- **Type Safety**: Better compile-time guarantees
+
+## See Also
+
+- `@ObservableState`: The modern way to make state observable
+- `Store`: The store type that powers TCA
+- [Migration Guide](https://swiftpackageindex.com/pointfreeco/swift-composable-architecture/main/documentation/composablearchitecture/migratingto1.7#Using-ObservableState)

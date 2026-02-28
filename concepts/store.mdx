@@ -1,0 +1,508 @@
+---
+title: Store
+description: The Store and StoreOf types that power TCA applications
+---
+
+# Store
+
+The `Store` is the runtime that powers your TCA application. It holds the current state, processes actions through reducers, and executes effects. You typically create one store at the root of your application and pass scoped versions to child views.
+
+## The Store Type
+
+```swift Store.swift
+@MainActor
+public final class Store<State, Action> {
+  public convenience init<R: Reducer<State, Action>>(
+    initialState: @autoclosure () -> R.State,
+    @ReducerBuilder<State, Action> reducer: () -> R,
+    withDependencies prepareDependencies: ((inout DependencyValues) -> Void)? = nil
+  )
+}
+```
+
+Source: [Store.swift:98-141](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L98-L141)
+
+## Creating a Store
+
+### Basic Initialization
+
+Create a store with initial state and a reducer:
+
+```swift App.swift
+import ComposableArchitecture
+import SwiftUI
+
+@main
+struct MyApp: App {
+  var body: some Scene {
+    WindowGroup {
+      RootView(
+        store: Store(initialState: AppFeature.State()) {
+          AppFeature()
+        }
+      )
+    }
+  }
+}
+```
+
+### With Dependencies
+
+Override dependencies at store creation:
+
+```swift
+let store = Store(
+  initialState: Feature.State()
+) {
+  Feature()
+} withDependencies: {
+  $0.apiClient = .mock
+  $0.uuid = .incrementing
+}
+```
+
+## Accessing State
+
+### In SwiftUI Views
+
+Access state directly from the store when using `@ObservableState`:
+
+```swift FeatureView.swift
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    VStack {
+      // Direct property access
+      Text("Count: \(store.count)")
+      Text("Name: \(store.name)")
+      
+      if store.isLoading {
+        ProgressView()
+      }
+    }
+  }
+}
+```
+
+<Note>
+With `@ObservableState`, you don't need `@ObservedObject` or other property wrappers. The store integrates with Swift's Observation framework.
+</Note>
+
+### Using withState
+
+For non-observable contexts or when you need a snapshot:
+
+```swift
+let currentCount = store.withState { state in
+  state.count
+}
+
+store.withState { state in
+  print("Current state: \(state)")
+}
+```
+
+Source: [Store.swift:166-174](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L166-L174)
+
+<Warning>
+State accessed through `withState` is a snapshot. Changes to state won't be observed over time.
+</Warning>
+
+## Sending Actions
+
+Send actions to the store to trigger state changes:
+
+```swift
+Button("Increment") {
+  store.send(.incrementButtonTapped)
+}
+```
+
+Source: [Store.swift:176-192](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L176-L192)
+
+### With Animation
+
+```swift
+Button("Toggle") {
+  store.send(.toggleButtonTapped, animation: .spring())
+}
+```
+
+Source: [Store.swift:194-204](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L194-L204)
+
+### With Transaction
+
+```swift
+Button("Update") {
+  store.send(.update, transaction: Transaction(animation: .default))
+}
+```
+
+Source: [Store.swift:206-218](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L206-L218)
+
+## Scoping
+
+The `scope` method transforms a store to work with a subset of state and actions:
+
+```swift Store.swift
+public func scope<ChildState, ChildAction>(
+  state: KeyPath<State, ChildState>,
+  action: CaseKeyPath<Action, ChildAction>
+) -> Store<ChildState, ChildAction>
+```
+
+Source: [Store.swift:260-268](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L260-L268)
+
+### Basic Scoping
+
+```swift AppView.swift
+struct AppView: View {
+  let store: StoreOf<AppFeature>
+  
+  var body: some View {
+    TabView {
+      ProfileView(
+        store: store.scope(state: \.profile, action: \.profile)
+      )
+      .tabItem { Text("Profile") }
+      
+      SettingsView(
+        store: store.scope(state: \.settings, action: \.settings)
+      )
+      .tabItem { Text("Settings") }
+    }
+  }
+}
+```
+
+### Why Scoping?
+
+<CardGroup cols={2}>
+  <Card title="Modularity" icon="puzzle-piece">
+    Views only access the state they need
+  </Card>
+  <Card title="Type Safety" icon="shield-check">
+    Compiler ensures child views can't access parent state
+  </Card>
+  <Card title="Performance" icon="gauge-high">
+    Views only re-render when their slice of state changes
+  </Card>
+  <Card title="Testability" icon="flask-vial">
+    Child features can be tested in isolation
+  </Card>
+</CardGroup>
+
+## Store Task
+
+The `StoreTask` type represents the lifecycle of effects:
+
+```swift Store.swift
+public struct StoreTask: Hashable, Sendable {
+  public func cancel()
+  public func finish() async
+  public var isCancelled: Bool { get }
+}
+```
+
+Source: [Store.swift:457-481](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L457-L481)
+
+### Awaiting Effects
+
+Tie effect lifecycle to SwiftUI's `.task` modifier:
+
+```swift
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    Text("Content")
+      .task {
+        await store.send(.task).finish()
+      }
+  }
+}
+```
+
+<Info>
+When the view disappears, the task is automatically cancelled, which cancels the effect.
+</Info>
+
+### Manual Cancellation
+
+```swift
+let task = store.send(.startLongRunningOperation)
+
+// Later...
+task.cancel()
+```
+
+## Store Publisher
+
+For Combine-based observation:
+
+```swift
+store.publisher.count
+  .sink { count in
+    print("Count changed to: \(count)")
+  }
+  .store(in: &cancellables)
+```
+
+Source: [Store.swift:361-366](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L361-L366)
+
+<Note>
+With `@ObservableState`, prefer using Swift's Observation framework over Combine publishers.
+</Note>
+
+## StoreOf Type Alias
+
+Use `StoreOf` for more concise type signatures:
+
+```swift Store.swift
+public typealias StoreOf<R: Reducer> = Store<R.State, R.Action>
+```
+
+Source: [Store.swift:402](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L402)
+
+```swift
+// Instead of:
+struct FeatureView: View {
+  let store: Store<Feature.State, Feature.Action>
+}
+
+// Write:
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+}
+```
+
+## Observation
+
+TCA integrates with Swift's Observation framework:
+
+### iOS 17+
+
+Automatic observation using Swift's native `Observable` protocol:
+
+```swift
+@ObservableState
+struct State {
+  var count: Int = 0
+}
+
+struct ContentView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    // Automatically observes store.count
+    Text("\(store.count)")
+  }
+}
+```
+
+### iOS 13-16
+
+Uses the Perception library for backward compatibility:
+
+```swift
+import Perception
+
+struct ContentView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    WithPerceptionTracking {
+      Text("\(store.count)")
+    }
+  }
+}
+```
+
+<Tip>
+The `@ObservableState` macro handles both cases automatically. You don't need to change your code.
+</Tip>
+
+## Testing Stores
+
+Use `TestStore` for testing:
+
+```swift FeatureTests.swift
+import ComposableArchitecture
+import XCTest
+
+@MainActor
+final class FeatureTests: XCTestCase {
+  func testIncrement() async {
+    let store = TestStore(initialState: Feature.State()) {
+      Feature()
+    }
+    
+    await store.send(.incrementButtonTapped) {
+      $0.count = 1
+    }
+  }
+}
+```
+
+## Store Lifecycle
+
+### Initialization
+
+1. Store is created with initial state
+2. Dependencies are prepared
+3. Reducer is configured
+4. State observation is set up
+
+### Action Processing
+
+1. Action is sent via `store.send()`
+2. Reducer processes action, mutating state
+3. Effects are executed
+4. Observers are notified of state changes
+
+### Deinitialization
+
+1. All running effects are cancelled
+2. Child stores are deallocated
+3. Observations are cleaned up
+
+Source: [Core.swift:42-217](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Core.swift#L42-L217)
+
+## Best Practices
+
+<Steps>
+  <Step title="Create Store at App Root">
+    Create a single store in your app's entry point:
+    
+    ```swift
+    @main
+    struct MyApp: App {
+      let store = Store(initialState: AppFeature.State()) {
+        AppFeature()
+      }
+      
+      var body: some Scene {
+        WindowGroup {
+          AppView(store: store)
+        }
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Scope to Child Views">
+    Use `scope` to pass focused stores to children:
+    
+    ```swift
+    ChildView(
+      store: store.scope(state: \.child, action: \.child)
+    )
+    ```
+  </Step>
+  
+  <Step title="Avoid State Copies">
+    Don't copy state out of the store:
+    
+    ```swift
+    // ❌ Don't do this
+    @State var localCount: Int
+    
+    var body: some View {
+      Text("\(localCount)")
+        .onAppear {
+          localCount = store.count  // State is stale
+        }
+    }
+    
+    // ✅ Do this
+    var body: some View {
+      Text("\(store.count)")
+    }
+    ```
+  </Step>
+  
+  <Step title="Use @ObservableState">
+    Always apply `@ObservableState` to your state types:
+    
+    ```swift
+    @ObservableState
+    struct State {
+      var count: Int = 0
+    }
+    ```
+  </Step>
+</Steps>
+
+## Common Patterns
+
+### Optional Child Stores
+
+Scope to optional child state:
+
+```swift
+struct ParentView: View {
+  let store: StoreOf<Parent>
+  
+  var body: some View {
+    if let childStore = store.scope(state: \.child, action: \.child) {
+      ChildView(store: childStore)
+    }
+  }
+}
+```
+
+### Store in @StateObject
+
+For creating stores in SwiftUI views:
+
+```swift
+struct FeatureView: View {
+  @StateObject var store = Store(
+    initialState: Feature.State()
+  ) {
+    Feature()
+  }
+  
+  var body: some View {
+    // Use store
+  }
+}
+```
+
+<Warning>
+Prefer passing stores from parent views rather than creating them in child views. This makes testing easier.
+</Warning>
+
+### Multiple Store Instances
+
+For previews or isolated features:
+
+```swift
+struct ContentView_Previews: PreviewProvider {
+  static var previews: some View {
+    Group {
+      FeatureView(
+        store: Store(initialState: Feature.State(count: 0)) {
+          Feature()
+        }
+      )
+      .previewDisplayName("Initial")
+      
+      FeatureView(
+        store: Store(initialState: Feature.State(count: 100)) {
+          Feature()
+        }
+      )
+      .previewDisplayName("Loaded")
+    }
+  }
+}
+```
+
+## Related Topics
+
+- [State Management](/concepts/state-management) - Understanding state
+- [Reducers](/concepts/reducers) - How actions are processed
+- [Effects](/concepts/effects) - Side effects executed by the store
+- [Testing](/guides/testing) - Testing with TestStore

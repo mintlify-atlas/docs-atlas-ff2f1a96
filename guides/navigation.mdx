@@ -1,0 +1,236 @@
+---
+title: Navigation Patterns
+description: Learn about state-driven navigation in TCA, including tree-based and stack-based approaches
+icon: route
+---
+
+State-driven navigation is a powerful concept in application development. The Composable Architecture provides tools to model your domains concisely and drive navigation from state.
+
+## What is navigation?
+
+For the purposes of this documentation, we use the following definition:
+
+<Note>
+  **Navigation** is a change of mode in the application.
+</Note>
+
+Each form of navigation—drill-downs, sheets, popovers, covers, alerts, dialogs, and more—represents a "change of mode" in the application. More specifically:
+
+<Note>
+  A **change of mode** is when some piece of state goes from not existing to existing, or vice-versa.
+</Note>
+
+When a piece of state switches from not existing to existing, that represents navigation and a change of mode. When it switches back to not existing, it represents undoing the navigation.
+
+## Two forms of navigation
+
+Navigation broadly falls into 2 main categories:
+
+<CardGroup cols={2}>
+  <Card title="Tree-based" icon="sitemap" href="/guides/tree-navigation">
+    Use optionals and enums to model navigation in a tree-like structure
+  </Card>
+  <Card title="Stack-based" icon="layer-group" href="/guides/stack-navigation">
+    Use flat collections to model navigation stacks
+  </Card>
+</CardGroup>
+
+Nearly all applications will use a combination of both styles, but it's important to know their strengths and weaknesses.
+
+## Tree-based navigation
+
+Tree-based navigation uses Swift's `Optional` type to represent existence or non-existence of state. When multiple states of navigation are nested, they form a tree-like structure.
+
+### Basic example
+
+```swift
+@Reducer
+struct InventoryFeature {
+  @ObservableState
+  struct State {
+    @Presents var detailItem: DetailItemFeature.State?
+    // ...
+  }
+  // ...
+}
+```
+
+### Deep linking
+
+With tree-based navigation, deep-linking is simply constructing deeply nested state:
+
+```swift
+InventoryView(
+  store: Store(
+    initialState: InventoryFeature.State(
+      detailItem: DetailItemFeature.State(      // Drill-down
+        editItem: EditItemFeature.State(        // Open sheet
+          alert: AlertState {                   // Show alert
+            TextState("This item is invalid.")
+          }
+        )
+      )
+    )
+  ) {
+    InventoryFeature()
+  }
+)
+```
+
+### Pros and cons
+
+<AccordionGroup>
+  <Accordion title="Pros of tree-based navigation">
+    - **Concise modeling**: Statically describe all valid navigation paths
+    - **Finite paths**: Impossible to restore invalid navigation states
+    - **Self-contained modules**: Features include their destinations, making previews fully functional
+    - **Easy integration testing**: Write detailed tests proving feature interactions
+    - **API unification**: Single style for all navigation types (sheets, drills, alerts, etc.)
+  </Accordion>
+  
+  <Accordion title="Cons of tree-based navigation">
+    - **Recursive paths are difficult**: Complex navigation like movie → actors → actor → movie is hard to model
+    - **Feature coupling**: Must compile all destination features together
+    - **Historical SwiftUI bugs**: More susceptible to navigation bugs (though improved in iOS 16.4+)
+  </Accordion>
+</AccordionGroup>
+
+## Stack-based navigation
+
+Stack-based navigation uses collections to model the presentation of features. An entire stack of features is represented by a collection of data.
+
+### Basic example
+
+```swift
+enum Path {
+  case detail(DetailItemFeature.State)
+  case edit(EditItemFeature.State)
+  // ...
+}
+
+let path: [Path] = [
+  .detail(DetailItemFeature.State(item: item)),
+  .edit(EditItemFeature.State(item: item)),
+  // ...
+]
+```
+
+### Complex navigation
+
+Stack-based navigation easily handles recursive paths:
+
+```swift
+let path: [Path] = [
+  .movie(/* ... */),
+  .actors(/* ... */),
+  .actor(/* ... */),
+  .movies(/* ... */),
+  .movie(/* ... */),  // Same feature, different data
+]
+```
+
+### Pros and cons
+
+<AccordionGroup>
+  <Accordion title="Pros of stack-based navigation">
+    - **Handles complexity**: Easily manages complex and recursive navigation paths
+    - **Decoupled features**: Each feature can be in its own module with no interdependencies
+    - **Fewer bugs**: `NavigationStack` API is more stable than tree-based alternatives
+  </Accordion>
+  
+  <Accordion title="Cons of stack-based navigation">
+    - **Non-sensical states possible**: Can express invalid navigation orders
+    - **Limited modularity**: Features in isolation are mostly inert in previews
+    - **Integration testing harder**: Difficult to test feature interactions when fully decoupled
+    - **Only for drill-downs**: Doesn't address sheets, popovers, alerts, etc.
+  </Accordion>
+</AccordionGroup>
+
+## Choosing an approach
+
+Most real-world applications use both approaches:
+
+<Steps>
+  <Step title="Start with stack-based for main flow">
+    Use `NavigationStack` and stack-based navigation for your app's primary navigation flow.
+  </Step>
+  
+  <Step title="Use tree-based for modals and auxiliary UI">
+    Within each feature in the stack, use tree-based navigation for sheets, popovers, alerts, and other modal presentations.
+  </Step>
+  
+  <Step title="Consider your priorities">
+    - Need finite, well-defined paths? → Tree-based
+    - Need recursive or complex paths? → Stack-based
+    - Need easy integration testing? → Tree-based
+    - Need fully decoupled features? → Stack-based
+  </Step>
+</Steps>
+
+## Navigation tools
+
+The Composable Architecture provides several tools for implementing navigation:
+
+### Tree-based tools
+
+- `@Presents` macro for optional state
+- `PresentationAction` for handling child actions
+- `ifLet` reducer operator for integration
+- Navigation view modifiers for sheets, popovers, alerts, etc.
+
+### Stack-based tools
+
+- `StackState` for modeling stack collections
+- `StackAction` for stack-related actions
+- `forEach` reducer operator for integration
+- `NavigationStack` initializer tuned for TCA
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Tree-based Navigation" icon="tree" href="/guides/tree-navigation">
+    Learn the details of implementing tree-based navigation
+  </Card>
+  <Card title="Stack-based Navigation" icon="bars-staggered" href="/guides/stack-navigation">
+    Learn the details of implementing stack-based navigation
+  </Card>
+  <Card title="Dismissal" icon="xmark">
+    Learn how to dismiss features from child domains
+  </Card>
+  <Card title="Testing Navigation" icon="flask" href="/guides/testing">
+    Learn how to test navigation flows
+  </Card>
+</CardGroup>
+
+## Example: Hybrid approach
+
+Here's how a typical app might combine both approaches:
+
+```swift
+@Reducer
+struct AppFeature {
+  @ObservableState
+  struct State {
+    // Stack-based navigation for main flow
+    var path = StackState<Path.State>()
+  }
+  
+  @Reducer
+  enum Path {
+    case home(HomeFeature)
+    case profile(ProfileFeature)
+  }
+}
+
+@Reducer
+struct HomeFeature {
+  @ObservableState
+  struct State {
+    // Tree-based navigation for modals
+    @Presents var settings: SettingsFeature.State?
+    @Presents var alert: AlertState<Action.Alert>?
+  }
+}
+```
+
+This hybrid approach gives you the best of both worlds: a flexible main navigation flow with well-defined modal presentations.

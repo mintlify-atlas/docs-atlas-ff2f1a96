@@ -1,0 +1,528 @@
+---
+title: Search
+description: Implement debounced search with API requests and cancellation
+---
+
+The Search example demonstrates how to build a live search feature with debouncing, API requests, and automatic cancellation. It's a perfect introduction to effects and async operations in TCA.
+
+## Overview
+
+This example shows how to:
+- Debounce user input with SwiftUI's `task` modifier
+- Make API requests with URLSession
+- Cancel in-flight requests automatically
+- Handle loading and error states
+- Define custom dependency clients
+- Test async behavior
+
+## Implementation
+
+<CodeGroup>
+
+```swift Reducer
+import ComposableArchitecture
+import SwiftUI
+
+@Reducer
+struct Search {
+  @ObservableState
+  struct State: Equatable {
+    var results: [GeocodingSearch.Result] = []
+    var resultForecastRequestInFlight: GeocodingSearch.Result?
+    var searchQuery = ""
+    var weather: Weather?
+
+    struct Weather: Equatable {
+      var id: GeocodingSearch.Result.ID
+      var days: [Day]
+
+      struct Day: Equatable {
+        var date: Date
+        var temperatureMax: Double
+        var temperatureMaxUnit: String
+        var temperatureMin: Double
+        var temperatureMinUnit: String
+      }
+    }
+  }
+
+  enum Action {
+    case forecastResponse(
+      GeocodingSearch.Result.ID,
+      Result<Forecast, any Error>
+    )
+    case searchQueryChanged(String)
+    case searchQueryChangeDebounced
+    case searchResponse(Result<GeocodingSearch, any Error>)
+    case searchResultTapped(GeocodingSearch.Result)
+  }
+
+  @Dependency(\.weatherClient) var weatherClient
+  private enum CancelID { case location, weather }
+
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .forecastResponse(_, .failure):
+        state.weather = nil
+        state.resultForecastRequestInFlight = nil
+        return .none
+
+      case .forecastResponse(let id, .success(let forecast)):
+        state.weather = State.Weather(
+          id: id,
+          days: forecast.daily.time.indices.map {
+            State.Weather.Day(
+              date: forecast.daily.time[$0],
+              temperatureMax: forecast.daily.temperatureMax[$0],
+              temperatureMaxUnit: forecast.dailyUnits.temperatureMax,
+              temperatureMin: forecast.daily.temperatureMin[$0],
+              temperatureMinUnit: forecast.dailyUnits.temperatureMin
+            )
+          }
+        )
+        state.resultForecastRequestInFlight = nil
+        return .none
+
+      case .searchQueryChanged(let query):
+        state.searchQuery = query
+
+        guard !state.searchQuery.isEmpty else {
+          state.results = []
+          state.weather = nil
+          return .cancel(id: CancelID.location)
+        }
+        return .none
+
+      case .searchQueryChangeDebounced:
+        guard !state.searchQuery.isEmpty else {
+          return .none
+        }
+        return .run { [query = state.searchQuery] send in
+          await send(
+            .searchResponse(
+              Result { try await self.weatherClient.search(query: query) }
+            )
+          )
+        }
+        .cancellable(id: CancelID.location)
+
+      case .searchResponse(.failure):
+        state.results = []
+        return .none
+
+      case .searchResponse(.success(let response)):
+        state.results = response.results
+        return .none
+
+      case .searchResultTapped(let location):
+        state.resultForecastRequestInFlight = location
+
+        return .run { send in
+          await send(
+            .forecastResponse(
+              location.id,
+              Result {
+                try await self.weatherClient.forecast(location: location)
+              }
+            )
+          )
+        }
+        .cancellable(id: CancelID.weather, cancelInFlight: true)
+      }
+    }
+  }
+}
+```
+
+```swift Weather Client
+import ComposableArchitecture
+import Foundation
+
+@DependencyClient
+struct WeatherClient {
+  var forecast: @Sendable (
+    _ location: GeocodingSearch.Result
+  ) async throws -> Forecast
+  var search: @Sendable (
+    _ query: String
+  ) async throws -> GeocodingSearch
+}
+
+extension WeatherClient: DependencyKey {
+  static let liveValue = WeatherClient(
+    forecast: { result in
+      var components = URLComponents(
+        string: "https://api.open-meteo.com/v1/forecast"
+      )!
+      components.queryItems = [
+        URLQueryItem(name: "latitude", value: "\(result.latitude)"),
+        URLQueryItem(name: "longitude", value: "\(result.longitude)"),
+        URLQueryItem(
+          name: "daily",
+          value: "temperature_2m_max,temperature_2m_min"
+        ),
+        URLQueryItem(
+          name: "timezone",
+          value: TimeZone.autoupdatingCurrent.identifier
+        ),
+      ]
+
+      let (data, _) = try await URLSession.shared.data(
+        from: components.url!
+      )
+      return try jsonDecoder.decode(Forecast.self, from: data)
+    },
+    search: { query in
+      var components = URLComponents(
+        string: "https://geocoding-api.open-meteo.com/v1/search"
+      )!
+      components.queryItems = [URLQueryItem(name: "name", value: query)]
+
+      let (data, _) = try await URLSession.shared.data(
+        from: components.url!
+      )
+      return try jsonDecoder.decode(GeocodingSearch.self, from: data)
+    }
+  )
+}
+
+extension DependencyValues {
+  var weatherClient: WeatherClient {
+    get { self[WeatherClient.self] }
+    set { self[WeatherClient.self] = newValue }
+  }
+}
+
+struct GeocodingSearch: Decodable, Equatable, Sendable {
+  var results: [Result]
+
+  struct Result: Decodable, Equatable, Identifiable, Sendable {
+    var country: String
+    var latitude: Double
+    var longitude: Double
+    var id: Int
+    var name: String
+    var admin1: String?
+  }
+}
+
+struct Forecast: Decodable, Equatable, Sendable {
+  var daily: Daily
+  var dailyUnits: DailyUnits
+
+  struct Daily: Decodable, Equatable, Sendable {
+    var temperatureMax: [Double]
+    var temperatureMin: [Double]
+    var time: [Date]
+  }
+
+  struct DailyUnits: Decodable, Equatable, Sendable {
+    var temperatureMax: String
+    var temperatureMin: String
+  }
+}
+```
+
+```swift View
+struct SearchView: View {
+  @Bindable var store: StoreOf<Search>
+
+  var body: some View {
+    NavigationStack {
+      VStack(alignment: .leading) {
+        HStack {
+          Image(systemName: "magnifyingglass")
+          TextField(
+            "New York, San Francisco, ...",
+            text: $store.searchQuery.sending(\.searchQueryChanged)
+          )
+          .textFieldStyle(.roundedBorder)
+          .autocapitalization(.none)
+          .disableAutocorrection(true)
+        }
+        .padding(.horizontal, 16)
+
+        List {
+          ForEach(store.results) { location in
+            VStack(alignment: .leading) {
+              Button {
+                store.send(.searchResultTapped(location))
+              } label: {
+                HStack {
+                  Text(location.name)
+
+                  if store.resultForecastRequestInFlight?.id
+                    == location.id
+                  {
+                    ProgressView()
+                  }
+                }
+              }
+
+              if location.id == store.weather?.id {
+                weatherView(locationWeather: store.weather)
+              }
+            }
+          }
+        }
+      }
+      .navigationTitle("Search")
+    }
+    .task(id: store.searchQuery) {
+      do {
+        try await Task.sleep(for: .milliseconds(300))
+        await store.send(.searchQueryChangeDebounced).finish()
+      } catch {}
+    }
+  }
+
+  @ViewBuilder
+  func weatherView(
+    locationWeather: Search.State.Weather?
+  ) -> some View {
+    if let locationWeather {
+      let days = locationWeather.days
+        .enumerated()
+        .map { idx, weather in
+          formattedWeather(day: weather, isToday: idx == 0)
+        }
+
+      VStack(alignment: .leading) {
+        ForEach(days, id: \.self) { day in
+          Text(day)
+        }
+      }
+      .padding(.leading, 16)
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+## Key Concepts
+
+### Debouncing with SwiftUI
+
+Use `.task(id:)` for automatic debouncing:
+
+```swift
+.task(id: store.searchQuery) {
+  do {
+    try await Task.sleep(for: .milliseconds(300))
+    await store.send(.searchQueryChangeDebounced).finish()
+  } catch {}
+}
+```
+
+When `searchQuery` changes:
+1. Previous task is automatically cancelled
+2. New task waits 300ms
+3. If not cancelled, sends the debounced action
+
+### Automatic Cancellation
+
+Mark effects as cancellable:
+
+```swift
+return .run { [query = state.searchQuery] send in
+  await send(
+    .searchResponse(
+      Result { try await self.weatherClient.search(query: query) }
+    )
+  )
+}
+.cancellable(id: CancelID.location)
+```
+
+When the search query changes, previous requests are automatically cancelled.
+
+### Cancel in Flight
+
+Cancel and replace in-flight requests:
+
+```swift
+return .run { send in
+  await send(
+    .forecastResponse(
+      location.id,
+      Result {
+        try await self.weatherClient.forecast(location: location)
+      }
+    )
+  )
+}
+.cancellable(id: CancelID.weather, cancelInFlight: true)
+```
+
+Only the most recent forecast request will complete.
+
+### Clearing State
+
+Clear results when query is cleared:
+
+```swift
+case .searchQueryChanged(let query):
+  state.searchQuery = query
+
+  guard !state.searchQuery.isEmpty else {
+    state.results = []
+    state.weather = nil
+    return .cancel(id: CancelID.location)
+  }
+  return .none
+```
+
+### Loading States
+
+Track in-flight requests:
+
+```swift
+var resultForecastRequestInFlight: GeocodingSearch.Result?
+
+case .searchResultTapped(let location):
+  state.resultForecastRequestInFlight = location
+  // Make request...
+
+case .forecastResponse(let id, .success(let forecast)):
+  state.weather = /* parse forecast */
+  state.resultForecastRequestInFlight = nil
+  return .none
+```
+
+Show loading indicator in view:
+
+```swift
+if store.resultForecastRequestInFlight?.id == location.id {
+  ProgressView()
+}
+```
+
+### Custom Dependencies
+
+Define the client interface:
+
+```swift
+@DependencyClient
+struct WeatherClient {
+  var forecast: @Sendable (
+    _ location: GeocodingSearch.Result
+  ) async throws -> Forecast
+  var search: @Sendable (
+    _ query: String
+  ) async throws -> GeocodingSearch
+}
+```
+
+Provide live and test implementations:
+
+```swift
+extension WeatherClient: DependencyKey {
+  static let liveValue = WeatherClient(
+    forecast: { /* real API call */ },
+    search: { /* real API call */ }
+  )
+}
+
+extension WeatherClient: TestDependencyKey {
+  static let testValue = WeatherClient(
+    forecast: { _ in .mock },
+    search: { _ in .mock }
+  )
+}
+```
+
+## Testing
+
+```swift
+@Test
+func testSearchAndForecast() async {
+  let store = TestStore(initialState: Search.State()) {
+    Search()
+  } withDependencies: {
+    $0.weatherClient.search = { _ in
+      GeocodingSearch(
+        results: [
+          GeocodingSearch.Result(
+            country: "US",
+            latitude: 40.7,
+            longitude: -74.0,
+            id: 1,
+            name: "New York",
+            admin1: nil
+          )
+        ]
+      )
+    }
+    $0.weatherClient.forecast = { _ in .mock }
+  }
+
+  await store.send(.searchQueryChanged("New York")) {
+    $0.searchQuery = "New York"
+  }
+
+  await store.send(.searchQueryChangeDebounced)
+
+  await store.receive(\.searchResponse.success) {
+    $0.results = [
+      GeocodingSearch.Result(
+        country: "US",
+        latitude: 40.7,
+        longitude: -74.0,
+        id: 1,
+        name: "New York",
+        admin1: nil
+      )
+    ]
+  }
+
+  await store.send(.searchResultTapped($0.results[0])) {
+    $0.resultForecastRequestInFlight = $0.results[0]
+  }
+
+  await store.receive(\.forecastResponse) {
+    $0.weather = /* expected weather */
+    $0.resultForecastRequestInFlight = nil
+  }
+}
+
+@Test
+func testClearQuery() async {
+  let store = TestStore(
+    initialState: Search.State(
+      results: [
+        GeocodingSearch.Result(
+          country: "US",
+          latitude: 40.7,
+          longitude: -74.0,
+          id: 1,
+          name: "New York",
+          admin1: nil
+        )
+      ],
+      searchQuery: "New York"
+    )
+  ) {
+    Search()
+  }
+
+  await store.send(.searchQueryChanged("")) {
+    $0.searchQuery = ""
+    $0.results = []
+    $0.weather = nil
+  }
+}
+```
+
+## Source Code
+
+View the complete example in the TCA repository:
+- [SearchView.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/Search/Search/SearchView.swift)
+- [WeatherClient.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/Search/Search/WeatherClient.swift)
+
+## Next Steps
+
+- Learn about [effects](/fundamentals/effects) in depth
+- Explore [dependencies](/fundamentals/dependencies) for testing
+- See [testing](/fundamentals/testing) async effects

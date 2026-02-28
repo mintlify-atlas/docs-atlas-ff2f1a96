@@ -1,0 +1,201 @@
+---
+title: Scope
+description: Embeds a child reducer in a parent domain by transforming state and actions
+---
+
+# Scope
+
+`Scope` embeds a child reducer in a parent domain by transforming parent state and actions into child state and actions. This is a fundamental tool for breaking down large features into smaller, composable units that can be easier to understand, test, and package into isolated modules.
+
+## Type Signature
+
+```swift
+public struct Scope<ParentState, ParentAction, Child: Reducer>: Reducer
+```
+
+## Initializer
+
+```swift
+public init<ChildState, ChildAction>(
+  state toChildState: WritableKeyPath<ParentState, ChildState>,
+  action toChildAction: CaseKeyPath<ParentAction, ChildAction>,
+  @ReducerBuilder<ChildState, ChildAction> child: () -> Child
+) where ChildState == Child.State, ChildAction == Child.Action
+```
+
+**Parameters:**
+- `toChildState`: A writable key path from parent state to a property containing child state
+- `toChildAction`: A case path from parent action to a case containing child actions
+- `child`: A reducer builder closure that describes the reducer to run on the child domain
+
+## Usage
+
+### Basic struct state composition
+
+```swift
+@Reducer
+struct Child {
+  struct State {
+    var count = 0
+  }
+  enum Action {
+    case incrementTapped
+    case decrementTapped
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .incrementTapped:
+        state.count += 1
+        return .none
+      case .decrementTapped:
+        state.count -= 1
+        return .none
+      }
+    }
+  }
+}
+
+@Reducer
+struct Parent {
+  struct State {
+    var child: Child.State
+    var title = ""
+  }
+  
+  enum Action {
+    case child(Child.Action)
+    case titleChanged(String)
+  }
+  
+  var body: some Reducer<State, Action> {
+    Scope(state: \.child, action: \.child) {
+      Child()
+    }
+    Reduce { state, action in
+      switch action {
+      case .child:
+        // Child actions are handled by the scoped reducer
+        return .none
+      case let .titleChanged(title):
+        state.title = title
+        return .none
+      }
+    }
+  }
+}
+```
+
+### Enum state composition
+
+`Scope` also works when state is modeled as an enum:
+
+```swift
+@Reducer
+struct Feature {
+  enum State {
+    case unloaded
+    case loading
+    case loaded(Child.State)
+  }
+  
+  enum Action {
+    case child(Child.Action)
+    case load
+  }
+  
+  var body: some Reducer<State, Action> {
+    Scope(state: \.loaded, action: \.child) {
+      Child()
+    }
+    Reduce { state, action in
+      switch action {
+      case .child:
+        return .none
+      case .load:
+        state = .loading
+        return .run { send in
+          let data = try await loadData()
+          await send(.child(.dataLoaded(data)))
+        }
+      }
+    }
+  }
+}
+```
+
+### Multiple child features
+
+You can scope multiple child features in a single parent:
+
+```swift
+@Reducer
+struct Parent {
+  struct State {
+    var profile: Profile.State
+    var settings: Settings.State
+    var notifications: Notifications.State
+  }
+  
+  enum Action {
+    case profile(Profile.Action)
+    case settings(Settings.Action)
+    case notifications(Notifications.Action)
+  }
+  
+  var body: some Reducer<State, Action> {
+    Scope(state: \.profile, action: \.profile) {
+      Profile()
+    }
+    Scope(state: \.settings, action: \.settings) {
+      Settings()
+    }
+    Scope(state: \.notifications, action: \.notifications) {
+      Notifications()
+    }
+    Reduce { state, action in
+      // Additional parent logic
+      return .none
+    }
+  }
+}
+```
+
+## Order of Operations
+
+The order in which you combine `Scope` with other reducers matters:
+
+```swift
+var body: some Reducer<State, Action> {
+  // ✅ Correct: Scope comes before parent logic
+  Scope(state: \.child, action: \.child) {
+    Child()
+  }
+  Reduce { state, action in
+    // Parent logic here
+  }
+}
+```
+
+**Why order matters:** When using enum state with case paths, if the parent reducer runs first and switches state to another case, the scoped child reducer won't be able to react to the action. This can cause subtle bugs. TCA shows a runtime warning and causes test failures when this occurs.
+
+## Runtime Warnings
+
+If `Scope` receives a child action when child state is set to a different case (for enum state), or when the state is unavailable, it will emit a runtime warning:
+
+```
+A "Scope" at "Feature.swift:50" received a child action when child state 
+was set to a different case.
+```
+
+This typically happens when:
+- A parent reducer changed the state case before the scoped reducer ran
+- An in-flight effect emitted an action when child state was unavailable
+- An action was sent when state was in the wrong case
+
+## See Also
+
+- `ifLet` - Alternative for optional state that enforces correct ordering
+- `forEach` - For embedding reducers over collections
+- `Reduce` - For inline reducer logic

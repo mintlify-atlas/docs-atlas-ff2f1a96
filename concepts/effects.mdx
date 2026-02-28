@@ -1,0 +1,468 @@
+---
+title: Effects
+description: The Effect type for managing side effects in TCA
+---
+
+# Effects
+
+Effects represent side effects in TCA. They allow reducers to interact with the outside world, such as making API calls, reading from disk, or starting timers, while keeping the reducer logic pure and testable.
+
+## The Effect Type
+
+The `Effect` type is a wrapper around asynchronous operations that can emit actions:
+
+```swift Effect.swift
+public struct Effect<Action>: Sendable {
+  enum Operation: Sendable {
+    case none
+    case publisher(AnyPublisher<Action, Never>)
+    case run(
+      name: String? = nil,
+      priority: TaskPriority? = nil,
+      operation: @Sendable (_ send: Send<Action>) async -> Void
+    )
+  }
+}
+```
+
+Source: [Effect.swift:5-24](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Effect.swift#L5-L24)
+
+## Creating Effects
+
+### Effect.none
+
+When no side effect is needed:
+
+```swift
+case .cancelButtonTapped:
+  state.isLoading = false
+  return .none
+```
+
+Source: [Effect.swift:46-49](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Effect.swift#L46-L49)
+
+### Effect.run
+
+The primary way to create effects with async/await:
+
+```swift
+case .fetchButtonTapped:
+  state.isLoading = true
+  return .run { send in
+    do {
+      let data = try await apiClient.fetchData()
+      await send(.dataLoaded(data))
+    } catch {
+      await send(.dataFailed(error))
+    }
+  }
+```
+
+Source: [Effect.swift:92-136](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Effect.swift#L92-L136)
+
+<Info>
+`Effect.run` automatically captures dependencies and provides a `send` function for emitting actions back into the system.
+</Info>
+
+### Effect.send
+
+Immediately emit a single action:
+
+```swift
+case .delegate(.didComplete):
+  // Notify parent immediately
+  return .send(.delegate(.childDidComplete))
+```
+
+Source: [Effect.swift:138-149](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Effect.swift#L138-L149)
+
+<Warning>
+Avoid using `Effect.send` to share logic between actions. Instead, extract shared logic into helper functions or use proper action composition.
+</Warning>
+
+## The Send Type
+
+The `Send` type allows effects to emit actions back into the system:
+
+```swift Effect.swift
+@MainActor
+public struct Send<Action>: Sendable {
+  public func callAsFunction(_ action: Action)
+  public func callAsFunction(_ action: Action, animation: Animation?)
+  public func callAsFunction(_ action: Action, transaction: Transaction)
+}
+```
+
+Source: [Effect.swift:196-231](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Effect.swift#L196-L231)
+
+### Using Send
+
+```swift
+return .run { send in
+  // Send an action
+  await send(.started)
+  
+  // Send with animation
+  await send(.updated, animation: .spring())
+  
+  // Send with transaction
+  await send(.completed, transaction: Transaction(animation: .default))
+}
+```
+
+<Note>
+`Send` implements `callAsFunction`, so you call it like a function: `send(.action)` instead of `send.send(.action)`.
+</Note>
+
+## Effect Patterns
+
+### Async Sequences
+
+Stream values from async sequences:
+
+```swift
+case .startListening:
+  return .run { send in
+    for await event in eventsClient.stream() {
+      await send(.eventReceived(event))
+    }
+  }
+```
+
+### Long-Running Effects
+
+```swift
+case .startTimer:
+  return .run { send in
+    while !Task.isCancelled {
+      try await Task.sleep(for: .seconds(1))
+      await send(.tick)
+    }
+  }
+```
+
+### Error Handling
+
+Use the `catch` parameter to handle errors:
+
+```swift
+case .fetch:
+  return .run { send in
+    let data = try await apiClient.fetchData()
+    await send(.dataLoaded(data))
+  } catch: { error, send in
+    await send(.errorOccurred(error))
+  }
+```
+
+### Task Priority
+
+Specify priority for effects:
+
+```swift
+return .run(priority: .background) { send in
+  // Low-priority background work
+  let result = await heavyComputation()
+  await send(.completed(result))
+}
+```
+
+## Combining Effects
+
+### Merge
+
+Run multiple effects concurrently:
+
+```swift
+case .onAppear:
+  return .merge(
+    .run { send in
+      let user = try await apiClient.fetchUser()
+      await send(.userLoaded(user))
+    },
+    .run { send in
+      let settings = try await apiClient.fetchSettings()
+      await send(.settingsLoaded(settings))
+    }
+  )
+```
+
+Source: [Effect.swift:236-294](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Effect.swift#L236-L294)
+
+### Concatenate
+
+Run effects sequentially:
+
+```swift
+case .startFlow:
+  return .concatenate(
+    .run { send in
+      await send(.step1Started)
+      try await Task.sleep(for: .seconds(1))
+      await send(.step1Completed)
+    },
+    .run { send in
+      await send(.step2Started)
+      try await Task.sleep(for: .seconds(1))
+      await send(.step2Completed)
+    }
+  )
+```
+
+Source: [Effect.swift:296-361](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Effect.swift#L296-L361)
+
+## Cancellation
+
+Effects are automatically cancelled when:
+- The store is deallocated
+- The view disappears (if using `.task { await store.send(.task).finish() }`)
+- You explicitly cancel them
+
+### Manual Cancellation
+
+Use cancellation IDs to manually cancel effects:
+
+```swift
+private enum CancelID { case timer }
+
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    switch action {
+    case .startTimer:
+      return .run { send in
+        while !Task.isCancelled {
+          try await Task.sleep(for: .seconds(1))
+          await send(.tick)
+        }
+      }
+      .cancellable(id: CancelID.timer)
+      
+    case .stopTimer:
+      return .cancel(id: CancelID.timer)
+    }
+  }
+}
+```
+
+### Cancel All Effects
+
+```swift
+case .logoutButtonTapped:
+  return .cancel(ids: CancelID.allCases)
+```
+
+## Testing Effects
+
+### Exhaustive Testing
+
+`TestStore` requires you to assert on all effects:
+
+```swift
+@MainActor
+func testFetch() async {
+  let store = TestStore(initialState: Feature.State()) {
+    Feature()
+  } withDependencies: {
+    $0.apiClient.fetchData = { "Test data" }
+  }
+  
+  await store.send(.fetchButtonTapped) {
+    $0.isLoading = true
+  }
+  
+  // Assert on the effect's action
+  await store.receive(\.dataLoaded) {
+    $0.isLoading = false
+    $0.data = "Test data"
+  }
+}
+```
+
+### Non-Exhaustive Testing
+
+For flexibility in tests:
+
+```swift
+let store = TestStore(initialState: Feature.State()) {
+  Feature()
+} withDependencies: {
+  $0.apiClient.fetchData = { "Test data" }
+}
+
+store.exhaustivity = .off
+
+await store.send(.fetchButtonTapped)
+// Don't need to assert on received actions
+```
+
+## Debouncing and Throttling
+
+### Debounce
+
+Delay effect execution until input stops:
+
+```swift
+case let .searchQueryChanged(query):
+  state.searchQuery = query
+  return .run { send in
+    try await Task.sleep(for: .milliseconds(300))
+    await send(.performSearch)
+  }
+  .debounce(id: CancelID.search, for: .milliseconds(300), scheduler: DispatchQueue.main)
+```
+
+### Throttle
+
+Limit effect execution frequency:
+
+```swift
+case .buttonTapped:
+  return .run { send in
+    await send(.performAction)
+  }
+  .throttle(id: CancelID.action, for: .seconds(1), scheduler: DispatchQueue.main, latest: true)
+```
+
+## Effect Animations
+
+Send actions with animations:
+
+```swift
+case .toggleButtonTapped:
+  return .run { send in
+    await send(.toggle, animation: .spring())
+  }
+```
+
+```swift
+case .toggle:
+  state.isExpanded.toggle()
+  return .none
+```
+
+## EffectOf Type Alias
+
+Use `EffectOf` for less verbose type signatures:
+
+```swift Effect.swift
+public typealias EffectOf<R: Reducer> = Effect<R.Action>
+```
+
+Source: [Effect.swift:39](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Effect.swift#L39)
+
+```swift
+// Instead of:
+func myEffect() -> Effect<Feature.Action> { /* ... */ }
+
+// You can write:
+func myEffect() -> EffectOf<Feature> { /* ... */ }
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Keep Effects Focused">
+    Each effect should do one thing. Use `.merge()` to combine multiple focused effects:
+    
+    ```swift
+    return .merge(
+      .run { /* fetch user */ },
+      .run { /* fetch settings */ },
+      .run { /* start analytics */ }
+    )
+    ```
+  </Step>
+  
+  <Step title="Always Handle Errors">
+    Use the `catch` parameter or do-catch blocks:
+    
+    ```swift
+    return .run { send in
+      do {
+        let data = try await apiClient.fetch()
+        await send(.success(data))
+      } catch {
+        await send(.failure(error))
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Use Cancellation IDs">
+    Always provide cancellation IDs for long-running effects:
+    
+    ```swift
+    return .run { /* ... */ }
+      .cancellable(id: CancelID.network)
+    ```
+  </Step>
+  
+  <Step title="Test All Effects">
+    Use `TestStore` to verify effects emit the expected actions:
+    
+    ```swift
+    await store.send(.fetch)
+    await store.receive(\.dataLoaded)
+    ```
+  </Step>
+  
+  <Step title="Check for Cancellation">
+    Respect cancellation in long-running effects:
+    
+    ```swift
+    return .run { send in
+      while !Task.isCancelled {
+        // Do work
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Common Pitfalls
+
+<Warning>
+**Escaping Send**: Don't escape the `send` function from `Effect.run`:
+
+```swift
+// ❌ Don't do this
+return .run { send in
+  Task.detached {
+    await send(.action)  // May be called after effect completes
+  }
+}
+
+// ✅ Do this instead
+return .run { send in
+  await Task.detached {
+    return await performWork()
+  }.value
+  await send(.action)
+}
+```
+</Warning>
+
+<Warning>
+**Unhandled Errors**: Effects that throw without a `catch` handler will trigger runtime warnings:
+
+```swift
+// ❌ Unhandled error
+return .run { send in
+  try await riskyOperation()  // ⚠️ Error not handled
+}
+
+// ✅ Handle the error
+return .run { send in
+  try await riskyOperation()
+} catch: { error, send in
+  await send(.errorOccurred(error))
+}
+```
+</Warning>
+
+## Related Topics
+
+- [Reducers](/concepts/reducers) - Where effects are returned
+- [Testing](/guides/testing) - Testing effects with TestStore
+- [Dependencies](/guides/dependencies) - Injecting dependencies into effects
+- [Store](/concepts/store) - How effects are executed

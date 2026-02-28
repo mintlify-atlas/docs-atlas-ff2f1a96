@@ -1,0 +1,517 @@
+---
+title: "Tree-based Navigation"
+description: "Learn about tree-based navigation with optionals and enums, including domain modeling, feature integration, testing, and more"
+---
+
+## Overview
+
+Tree-based navigation uses optional and enum state to model navigation. This style allows you to deep-link into any state by constructing deeply nested state and handing it to SwiftUI.
+
+**Key tools:**
+- `@Presents` macro
+- `PresentationAction` type
+- `.ifLet(_:action:destination:)` reducer operator
+
+## Basics
+
+Integrating features for navigation involves two steps: integrating domains and integrating views.
+
+### Step 1: Integrate Domains
+
+Add child state and actions to the parent using `@Presents` and `PresentationAction`:
+
+```swift
+@Reducer
+struct InventoryFeature {
+  @ObservableState
+  struct State: Equatable {
+    @Presents var addItem: ItemFormFeature.State?
+    var items: IdentifiedArrayOf<Item> = []
+    // ...
+  }
+
+  enum Action {
+    case addItem(PresentationAction<ItemFormFeature.Action>)
+    // ...
+  }
+  // ...
+}
+```
+
+<Note>
+The `addItem` state is optional. Non-`nil` means presented, `nil` means dismissed.
+</Note>
+
+Integrate reducers using `.ifLet` and add an action to populate child state:
+
+```swift
+@Reducer
+struct InventoryFeature {
+  @ObservableState
+  struct State: Equatable { /* ... */ }
+  enum Action { /* ... */ }
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in 
+      switch action {
+      case .addButtonTapped:
+        // Populating this state performs the navigation
+        state.addItem = ItemFormFeature.State()
+        return .none
+
+      // ...
+      }
+    }
+    .ifLet(\.$addItem, action: \.addItem) {
+      ItemFormFeature()
+    }
+  }
+}
+```
+
+<Tip>
+The key path uses the `$` syntax to focus on the `@Presents` projected value.
+</Tip>
+
+### Step 2: Integrate Views
+
+Pass a binding of a store to SwiftUI's view modifiers:
+
+```swift
+struct InventoryView: View {
+  @Bindable var store: StoreOf<InventoryFeature>
+
+  var body: some View {
+    List {
+      // ...
+    }
+    .sheet(
+      item: $store.scope(state: \.addItem, action: \.addItem)
+    ) { store in
+      ItemFormView(store: store)
+    }
+  }
+}
+```
+
+<Info>
+Use SwiftUI's `@Bindable` to produce a binding to a store, then scope it using `.scope(state:action:)`.
+</Info>
+
+This pattern works with all SwiftUI navigation modifiers:
+- `sheet(item:)`
+- `popover(item:)`
+- `fullScreenCover(item:)`
+- `navigationDestination(item:)`
+- And more
+
+## Enum State
+
+Modeling multiple destinations with multiple optionals creates invalid states:
+
+```swift
+@ObservableState
+struct State {
+  @Presents var detailItem: DetailFeature.State?
+  @Presents var editItem: EditFeature.State?
+  @Presents var addItem: AddFeature.State?
+  // Multiple could be non-nil simultaneously! ⚠️
+}
+```
+
+<Warning>
+**Invalid states increase exponentially:**
+- 3 optionals → 4 invalid states
+- 4 optionals → 11 invalid states
+- 5 optionals → 26 invalid states
+</Warning>
+
+### Solution: Use an Enum
+
+Model multiple destinations as a single enum:
+
+```swift
+enum State {
+  case addItem(AddFeature.State)
+  case detailItem(DetailFeature.State)
+  case editItem(EditFeature.State)
+  // ...
+}
+```
+
+This provides compile-time proof that only one destination is active at a time.
+
+### Implementation
+
+1. **Define a Destination Reducer**
+
+Use the `@Reducer` macro on an enum to auto-generate the full reducer:
+
+```swift
+@Reducer
+struct InventoryFeature {
+  // ...
+
+  @Reducer
+  enum Destination {
+    case addItem(AddFeature)
+    case detailItem(DetailFeature)
+    case editItem(EditFeature)
+  }
+}
+```
+
+<Tip>
+The `@Reducer` macro expands this simple enum into a fully composed feature with `State` and `Action` types. Use Xcode's "Expand Macro" to see what's generated.
+</Tip>
+
+2. **Hold a Single Optional State**
+
+```swift
+@Reducer
+struct InventoryFeature {
+  @ObservableState
+  struct State { 
+    @Presents var destination: Destination.State?
+    // ...
+  }
+  enum Action {
+    case destination(PresentationAction<Destination.Action>)
+    // ...
+  }
+  // ...
+}
+```
+
+3. **Integrate with `.ifLet`**
+
+```swift
+@Reducer
+struct InventoryFeature {
+  // ...
+
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in 
+      // ...
+    }
+    .ifLet(\.$destination, action: \.destination) 
+  }
+}
+```
+
+4. **Present Features by Setting Enum Cases**
+
+```swift
+case .addButtonTapped:
+  state.destination = .addItem(AddFeature.State())
+  return .none
+```
+
+5. **Scope Views to Specific Cases**
+
+```swift
+struct InventoryView: View {
+  @Bindable var store: StoreOf<InventoryFeature>
+
+  var body: some View {
+    List {
+      // ...
+    }
+    .sheet(
+      item: $store.scope(
+        state: \.destination?.addItem,
+        action: \.destination.addItem
+      )
+    ) { store in 
+      AddFeatureView(store: store)
+    }
+    .popover(
+      item: $store.scope(
+        state: \.destination?.editItem,
+        action: \.destination.editItem
+      )
+    ) { store in 
+      EditFeatureView(store: store)
+    }
+    .navigationDestination(
+      item: $store.scope(
+        state: \.destination?.detailItem,
+        action: \.destination.detailItem
+      )
+    ) { store in 
+      DetailFeatureView(store: store)
+    }
+  }
+}
+```
+
+## API Unification
+
+One of tree-based navigation's best features is API unification. Regardless of navigation type (drill-down, sheet, alert, etc.):
+
+1. **Domain integration** uses the single `.ifLet` operator
+2. **View integration** provides a store focused on presentation state/action
+
+Example showing multiple navigation types unified:
+
+```swift
+.sheet(
+  item: $store.scope(state: \.addItem, action: \.addItem)
+) { store in 
+  AddFeatureView(store: store)
+}
+.popover(
+  item: $store.scope(state: \.editItem, action: \.editItem)
+) { store in 
+  EditFeatureView(store: store)
+}
+.navigationDestination(
+  item: $store.scope(state: \.detailItem, action: \.detailItem)
+) { store in 
+  DetailFeatureView(store: store)
+}
+.alert(
+  $store.scope(state: \.alert, action: \.alert)
+)
+.confirmationDialog(
+  $store.scope(state: \.confirmationDialog, action: \.confirmationDialog)
+)
+```
+
+### Backwards Compatibility
+
+For iOS &lt;16, macOS &lt;13, tvOS &lt;16, watchOS &lt;9, use this `NavigationLink` helper:
+
+```swift
+@available(iOS, introduced: 13, deprecated: 16)
+@available(macOS, introduced: 10.15, deprecated: 13)
+@available(tvOS, introduced: 13, deprecated: 16)
+@available(watchOS, introduced: 6, deprecated: 9)
+extension NavigationLink {
+  public init<D, C: View>(
+    item: Binding<D?>,
+    onNavigate: @escaping (_ isActive: Bool) -> Void,
+    @ViewBuilder destination: (D) -> C,
+    @ViewBuilder label: () -> Label
+  ) where Destination == C? {
+    self.init(
+      destination: item.wrappedValue.map(destination),
+      isActive: Binding(
+        get: { item.wrappedValue != nil },
+        set: { isActive, transaction in
+          onNavigate(isActive)
+          if !isActive {
+            item.transaction(transaction).wrappedValue = nil
+          }
+        }
+      ),
+      label: label
+    )
+  }
+}
+```
+
+## Integration
+
+Parent features get instant access to everything in child features. Detect child actions by destructuring:
+
+```swift
+case .destination(.presented(.editItem(.saveButtonTapped))):
+  guard case let .editItem(editItemState) = state.destination
+  else { return .none }
+
+  state.destination = nil
+  return .run { _ in
+    self.database.save(editItemState.item)
+  }
+```
+
+## Dismissal
+
+Dismiss by nil-ing out the state:
+
+```swift
+case .closeButtonTapped:
+  state.destination = nil
+  return .none
+```
+
+### Self-Dismissal from Child
+
+Use the `@Dependency(\.dismiss)` to allow children to dismiss themselves:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State { /* ... */ }
+  enum Action { 
+    case closeButtonTapped
+    // ...
+  }
+  @Dependency(\.dismiss) var dismiss
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .closeButtonTapped:
+        return .run { _ in await self.dismiss() }
+      }
+    }
+  }
+}
+```
+
+<Warning>
+**Important:** The `DismissEffect` is async and must be called from `.run`. Never send actions after calling `dismiss()`:
+
+```swift
+return .run { send in 
+  await self.dismiss()
+  await send(.tick)  // ⚠️ Don't do this!
+}
+```
+</Warning>
+
+<Info>
+SwiftUI's `@Environment(\.dismiss)` and TCA's `@Dependency(\.dismiss)` are different types with different purposes:
+- SwiftUI's: Use in views only
+- TCA's: Use in reducers only
+</Info>
+
+## Testing
+
+Properly modeled navigation makes testing straightforward. Non-exhaustive testing is especially useful for navigation.
+
+### Example: Testing Dismissal
+
+Counter feature that dismisses when count ≥ 5:
+
+```swift
+@Reducer
+struct CounterFeature {
+  @ObservableState
+  struct State: Equatable {
+    var count = 0
+  }
+  enum Action {
+    case decrementButtonTapped
+    case incrementButtonTapped
+  }
+
+  @Dependency(\.dismiss) var dismiss
+
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .decrementButtonTapped:
+        state.count -= 1
+        return .none
+
+      case .incrementButtonTapped:
+        state.count += 1
+        return state.count >= 5
+          ? .run { _ in await self.dismiss() }
+          : .none
+      }
+    }
+  }
+}
+```
+
+Parent feature:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State: Equatable {
+    @Presents var counter: CounterFeature.State?
+  }
+  enum Action {
+    case counter(PresentationAction<CounterFeature.Action>)
+  }
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      // Logic and behavior for core feature.
+    }
+    .ifLet(\.$counter, action: \.counter) {
+      CounterFeature()
+    }
+  }
+}
+```
+
+### Exhaustive Test
+
+```swift
+@Test
+func dismissal() {
+  let store = TestStore(
+    initialState: Feature.State(
+      counter: CounterFeature.State(count: 3)
+    )
+  ) {
+    CounterFeature()
+  }
+
+  await store.send(\.counter.incrementButtonTapped) {
+    $0.counter?.count = 4
+  }
+  
+  await store.send(\.counter.incrementButtonTapped) {
+    $0.counter?.count = 5
+  }
+  
+  await store.receive(\.counter.dismiss) {
+    $0.counter = nil
+  }
+}
+```
+
+### Non-Exhaustive Test
+
+Turn off exhaustivity for high-level assertions:
+
+```swift
+@Test
+func dismissal() {
+  let store = TestStore(
+    initialState: Feature.State(
+      counter: CounterFeature.State(count: 3)
+    )
+  ) {
+    CounterFeature()
+  }
+  store.exhaustivity = .off
+
+  await store.send(\.counter.incrementButtonTapped)
+  await store.send(\.counter.incrementButtonTapped)
+  await store.receive(\.counter.dismiss) 
+}
+```
+
+<Tip>
+Non-exhaustive tests are more concise and resilient to changes you don't care about.
+</Tip>
+
+### Testing with Enum State
+
+When using enum destinations, chain into the specific case:
+
+```swift
+await store.send(\.destination.counter.incrementButtonTapped) {
+  $0.destination?.counter?.count = 4
+}
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Navigation Overview" icon="compass" href="/navigation/overview">
+    Learn about navigation concepts and patterns
+  </Card>
+  <Card title="Stack-based Navigation" icon="layer-group" href="/navigation/stack-based">
+    Learn about navigation with collections
+  </Card>
+</CardGroup>

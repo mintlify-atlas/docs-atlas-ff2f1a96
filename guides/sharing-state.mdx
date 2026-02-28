@@ -1,0 +1,352 @@
+---
+title: Shared State Management
+description: Learn techniques for sharing state throughout your application and persisting data
+icon: share-nodes
+---
+
+Sharing state is the process of letting many features have access to the same data so that when any feature makes a change, it is instantly visible to every other feature. The Composable Architecture provides tools for sharing state with many parts of your application.
+
+## Understanding shared state
+
+Because the Composable Architecture prefers modeling domains with value types rather than reference types, sharing state can be tricky. The library comes with tools from the [Sharing](https://github.com/pointfreeco/swift-sharing) library to handle this.
+
+<Note>
+  There are two main kinds of shared state: explicitly passed state and persisted state. And there are 3 persistence strategies: in-memory, user defaults, and file storage.
+</Note>
+
+## Explicit shared state
+
+This is the simplest kind of shared state. It allows you to share state amongst many features without any persistence. The data is only held in memory.
+
+<Steps>
+  <Step title="Define shared state in parent">
+    ```swift
+    @Reducer
+    struct ParentFeature {
+      @ObservableState
+      struct State {
+        @Shared var count: Int
+        // Other properties
+      }
+      // ...
+    }
+    ```
+  </Step>
+  
+  <Step title="Accept shared reference in child">
+    ```swift
+    @Reducer
+    struct ChildFeature {
+      @ObservableState
+      struct State {
+        @Shared var count: Int
+        // Other properties
+      }
+      // ...
+    }
+    ```
+  </Step>
+  
+  <Step title="Pass shared reference">
+    ```swift
+    case .presentButtonTapped:
+      state.child = ChildFeature.State(count: state.$count)
+      // ...
+    ```
+  </Step>
+</Steps>
+
+Now any mutation the child makes to `count` will be instantly reflected in the parent's count too.
+
+## Persisted shared state
+
+Sometimes you want to share state with the entire application without passing it around explicitly.
+
+### In-memory persistence
+
+Keeps data in memory and makes it available everywhere, but doesn't persist across app launches:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State {
+    @Shared(.inMemory("count")) var count = 0
+    // Other properties
+  }
+  // ...
+}
+```
+
+<Note>
+  When using a persistence strategy with `@Shared`, you must provide a default value.
+</Note>
+
+### App Storage (User Defaults)
+
+Automatically persists changes to user defaults:
+
+```swift
+@Shared(.appStorage("count")) var count = 0
+```
+
+This works for simple data types: strings, booleans, integers, doubles, URLs, data, and more.
+
+### File storage
+
+For complex data types, use file storage with JSON serialization:
+
+```swift
+@Shared(.fileStorage(URL(/* ... */))) var users: [User] = []
+```
+
+<Warning>
+  The value must conform to `Codable` when using file storage.
+</Warning>
+
+### Custom persistence
+
+You can create custom persistence strategies by conforming to `SharedKey`:
+
+```swift
+public final class CustomSharedKey: SharedKey {
+  // Implementation
+}
+
+extension SharedReaderKey {
+  public static func custom<Value>(/* ... */) -> Self
+  where Self == CustomPersistence<Value> {
+    CustomPersistence(/* ... */)
+  }
+}
+```
+
+Then use it:
+
+```swift
+@Shared(.custom(/* ... */)) var myValue: Value
+```
+
+## Observing changes
+
+The `@Shared` property wrapper exposes a `publisher` to observe changes:
+
+```swift
+case .onAppear:
+  return .publisher {
+    state.$count.publisher
+      .map(Action.countUpdated)
+  }
+
+case .countUpdated(let count):
+  // Do something with count
+  return .none
+```
+
+<Warning>
+  Be careful not to create infinite loops when both holding shared state and subscribing to changes.
+</Warning>
+
+## Initialization rules
+
+Property wrappers have special initialization rules. Here are the patterns:
+
+<AccordionGroup>
+  <Accordion title="Non-persisted, parent owns source of truth">
+    The initializer takes a `Shared` value:
+    
+    ```swift
+    public struct State {
+      @Shared public var count: Int
+      
+      public init(count: Shared<Int>) {
+        self._count = count
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Non-persisted, child owns source of truth">
+    The initializer takes a plain value:
+    
+    ```swift
+    public struct State {
+      @Shared public var count: Int
+      
+      public init(count: Int) {
+        self._count = Shared(count)
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="With persistence strategy">
+    Use the `wrappedValue` initializer:
+    
+    ```swift
+    public struct State {
+      @Shared public var count: Int
+      
+      public init(count: Int) {
+        self._count = Shared(wrappedValue: count, .appStorage("count"))
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Deriving shared state
+
+You can derive shared state for sub-parts of existing shared state:
+
+```swift
+@Reducer 
+struct PhoneNumberFeature { 
+  struct State {
+    @Shared var phoneNumber: String
+  }
+  // ...
+}
+```
+
+When constructing the child:
+
+```swift
+case .nextButtonTapped:
+  state.path.append(
+    PhoneNumberFeature.State(phoneNumber: state.$signUpData.phoneNumber)
+  )
+```
+
+This derives a `Shared<String>` from `Shared<SignUpData>`, allowing features to hold only the minimum shared state they need.
+
+## Concurrent mutations
+
+Shared state is technically a reference, which means race conditions are possible. Use `withLock` to mutate safely:
+
+```swift
+state.$count.withLock { $0 += 1 }
+```
+
+This locks the entire unit of work: reading the current count, incrementing it, and storing it back.
+
+<Tip>
+  Wrap as many mutations as possible in a single `withLock` to ensure the full unit of work is guarded by a lock.
+</Tip>
+
+## Testing shared state
+
+Shared state behaves differently from regular state but can still be tested exhaustively:
+
+```swift
+@Test
+func increment() async {
+  let store = TestStore(initialState: Feature.State(count: Shared(0))) {
+    Feature()
+  }
+
+  await store.send(.incrementButtonTapped) {
+    $0.$count.withLock { $0 = 1 }
+  }
+}
+```
+
+The `TestStore` and `@Shared` type work together to snapshot state before and after actions, allowing exhaustive assertions.
+
+### Testing with effects
+
+If shared state is mutated in an effect:
+
+```swift
+case .incrementButtonTapped:
+  return .run { [sharedCount = state.$count] _ in
+    await sharedCount.withLock { $0 += 1 }
+  }
+```
+
+You must explicitly assert on the shared state after the effect:
+
+```swift
+await store.send(.incrementButtonTapped)
+store.assert {
+  $0.$count.withLock { $0 = 1 }
+}
+```
+
+### Testing with persistence
+
+The `.appStorage` and `.fileStorage` strategies do extra work for testing:
+
+- `.appStorage` uses a non-persisting user defaults by default
+- `.fileStorage` uses a mock file system
+
+This means tests don't persist data across runs:
+
+```swift
+@Test
+func basics() {
+  @Shared(.appStorage("count")) var count = 42
+  
+  let store = TestStore(/* ... */)
+  // Shared state will be 42 for all features
+}
+```
+
+## Type-safe keys
+
+Add type safety by extending `SharedReaderKey`:
+
+```swift
+extension SharedReaderKey where Self == FileStorageKey<IdentifiedArrayOf<User>> {
+  static var users: Self {
+    fileStorage(.users)
+  }
+}
+```
+
+Now you can use it with compile-time type checking:
+
+```swift
+@Shared(.users) var users: IdentifiedArrayOf<User> = []
+```
+
+You can even bake in the default:
+
+```swift
+extension SharedReaderKey where Self == FileStorageKey<IdentifiedArrayOf<User>>.Default {
+  static var users: Self {
+    Self[.fileStorage(.users), default: []]
+  }
+}
+
+// Now even simpler:
+@Shared(.users) var users
+```
+
+## Best practices
+
+<CardGroup cols={2}>
+  <Card title="Use explicit sharing" icon="hand-pointer">
+    Prefer passing `@Shared` references explicitly over global persistence strategies
+  </Card>
+  <Card title="Lock mutations" icon="lock">
+    Always use `withLock` when mutating shared state
+  </Card>
+  <Card title="Derive when possible" icon="diagram-project">
+    Use derived shared state to give child features minimal access
+  </Card>
+  <Card title="Type-safe keys" icon="shield-check">
+    Create type-safe keys for better compiler checking
+  </Card>
+</CardGroup>
+
+## Read-only shared state
+
+For read-only access, use `@SharedReader`:
+
+```swift
+@SharedReader(.appStorage("isOn")) var isOn = false
+isOn = true  // 🛑 Compiler error
+```
+
+This is useful for remote configuration files or other data that shouldn't be mutated locally.

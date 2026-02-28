@@ -1,0 +1,385 @@
+---
+title: SwiftUI Bindings Integration
+description: Learn how to connect TCA features to SwiftUI bindings for two-way communication
+icon: arrows-left-right
+---
+
+Many SwiftUI APIs use bindings to set up two-way communication between your application's state and a view. The Composable Architecture provides several tools for creating bindings that establish such communication with your store.
+
+## Ad hoc bindings
+
+The simplest tool is to create a dedicated action that changes a piece of state.
+
+<Steps>
+  <Step title="Define state property">
+    ```swift
+    @Reducer
+    struct Settings {
+      struct State: Equatable {
+        var isHapticsEnabled = true
+        // ...
+      }
+      // ...
+    }
+    ```
+  </Step>
+  
+  <Step title="Define corresponding action">
+    ```swift
+    @Reducer
+    struct Settings {
+      struct State: Equatable { /* ... */ }
+      
+      enum Action { 
+        case isHapticsEnabledChanged(Bool)
+        // ...
+      }
+      // ...
+    }
+    ```
+  </Step>
+  
+  <Step title="Handle the action">
+    ```swift
+    var body: some Reducer<State, Action> {
+      Reduce { state, action in
+        switch action {
+        case let .isHapticsEnabledChanged(isEnabled):
+          state.isHapticsEnabled = isEnabled
+          return .none
+        // ...
+        }
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Derive binding in view">
+    First, hold the store in a bindable way:
+    
+    ```swift
+    struct SettingsView: View {
+      @Bindable var store: StoreOf<Settings>
+      // ...
+    }
+    ```
+    
+    <Note>
+      If targeting iOS 16 or earlier, use `@Perception.Bindable` instead of `@Bindable`.
+    </Note>
+  </Step>
+  
+  <Step title="Create the binding">
+    ```swift
+    var body: some View {
+      Form {
+        Toggle(
+          "Haptic feedback",
+          isOn: $store.isHapticsEnabled.sending(\.isHapticsEnabledChanged)
+        )
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Binding actions and reducers
+
+For screens with many controls, creating individual actions for each binding can be tedious. The library provides `BindableAction` and `BindingReducer` to eliminate boilerplate.
+
+### The problem
+
+Consider a settings screen with many editable fields:
+
+```swift
+@Reducer
+struct Settings {
+  @ObservableState
+  struct State {
+    var digest = Digest.daily
+    var displayName = ""
+    var enableNotifications = false
+    var isLoading = false
+    var protectMyPosts = false
+    var sendEmailNotifications = false
+    var sendMobileNotifications = false
+  }
+  // ...
+}
+```
+
+Traditionally, you'd need an action for each field:
+
+```swift
+enum Action {
+  case digestChanged(Digest)
+  case displayNameChanged(String)
+  case enableNotificationsChanged(Bool)
+  case protectMyPostsChanged(Bool)
+  case sendEmailNotificationsChanged(Bool)
+  case sendMobileNotificationsChanged(Bool)
+}
+```
+
+And handle each in the reducer:
+
+```swift
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    switch action {
+    case let digestChanged(digest):
+      state.digest = digest
+      return .none
+    // ... 5 more cases!
+    }
+  }
+}
+```
+
+This is a _lot_ of boilerplate.
+
+### The solution
+
+<Steps>
+  <Step title="Conform action to BindableAction">
+    ```swift
+    @Reducer
+    struct Settings {
+      @ObservableState
+      struct State { /* ... */ }
+      
+      enum Action: BindableAction {
+        case binding(BindingAction<State>)
+      }
+      // ...
+    }
+    ```
+  </Step>
+  
+  <Step title="Add BindingReducer">
+    ```swift
+    var body: some Reducer<State, Action> {
+      BindingReducer()
+    }
+    ```
+  </Step>
+  
+  <Step title="Make store bindable in view">
+    ```swift
+    struct SettingsView: View {
+      @Bindable var store: StoreOf<Settings>
+      // ...
+    }
+    ```
+  </Step>
+  
+  <Step title="Derive bindings with $ syntax">
+    ```swift
+    var body: some View {
+      Form {
+        TextField("Display name", text: $store.displayName)
+        Toggle("Notifications", isOn: $store.enableNotifications)
+        Toggle("Email notifications", isOn: $store.sendEmailNotifications)
+        Toggle("Mobile notifications", isOn: $store.sendMobileNotifications)
+        // ...
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+That's it! All the boilerplate is eliminated.
+
+## Observing specific bindings
+
+You can layer additional functionality over bindings by pattern matching:
+
+### Pattern matching in reducer
+
+```swift
+var body: some Reducer<State, Action> {
+  BindingReducer()
+  
+  Reduce { state, action in
+    switch action {
+    case .binding(\.displayName):
+      // Validate display name
+      return .none
+      
+    case .binding(\.enableNotifications):
+      // Request authorization from UNUserNotificationCenter
+      return .run { send in
+        let authorized = await requestNotificationAuthorization()
+        await send(.notificationAuthorizationResponse(authorized))
+      }
+    
+    default:
+      return .none
+    }
+  }
+}
+```
+
+### Using onChange
+
+Alternatively, use `onChange` on the `BindingReducer`:
+
+```swift
+var body: some Reducer<State, Action> {
+  BindingReducer()
+    .onChange(of: \.displayName) { oldValue, newValue in
+      Reduce { state, action in
+        // Validate display name
+        return .none
+      }
+    }
+    .onChange(of: \.enableNotifications) { oldValue, newValue in
+      Reduce { state, action in
+        // Return an authorization request effect
+        return .run { send in
+          let authorized = await requestNotificationAuthorization()
+          await send(.notificationAuthorizationResponse(authorized))
+        }
+      }
+    }
+}
+```
+
+## Testing bindings
+
+Binding actions can be tested just like regular actions. Instead of sending a specific action like `.displayNameChanged("Blob")`, you send a `BindingAction`:
+
+```swift
+let store = TestStore(initialState: Settings.State()) {
+  Settings()
+}
+
+await store.send(\.binding.displayName, "Blob") {
+  $0.displayName = "Blob"
+}
+
+await store.send(\.binding.protectMyPosts, true) {
+  $0.protectMyPosts = true
+}
+```
+
+<Tip>
+  The first argument is a key path to the binding, and the second is the new value.
+</Tip>
+
+## Advanced: Custom bindings
+
+You can create custom bindings that perform additional logic:
+
+```swift
+var volumeBinding: Binding<Double> {
+  $store.volume.sending { newValue in
+    // Custom validation or transformation
+    return .volumeChanged(min(max(newValue, 0), 1))
+  }
+}
+```
+
+This allows you to intercept and transform values before they reach your reducer.
+
+## Best practices
+
+<CardGroup cols={2}>
+  <Card title="Use BindingReducer for many bindings" icon="check">
+    When you have 3+ bindable fields, use `BindingReducer` instead of ad hoc bindings
+  </Card>
+  <Card title="Validate with onChange" icon="check">
+    Use `onChange` to add validation or side effects for specific fields
+  </Card>
+  <Card title="Test binding actions" icon="check">
+    Always test binding actions to ensure proper state mutations
+  </Card>
+  <Card title="Keep logic in reducer" icon="check">
+    Don't put business logic in custom binding closures; keep it in the reducer
+  </Card>
+</CardGroup>
+
+## Common patterns
+
+### Conditional bindings
+
+Sometimes you only want to update state when certain conditions are met:
+
+```swift
+var body: some Reducer<State, Action> {
+  BindingReducer()
+    .onChange(of: \.email) { oldValue, newValue in
+      Reduce { state, action in
+        if newValue.contains("@") {
+          state.emailValid = true
+        } else {
+          state.emailValid = false
+        }
+        return .none
+      }
+    }
+}
+```
+
+### Derived bindings
+
+You can derive bindings from computed properties:
+
+```swift
+extension SettingsView {
+  var notificationsEnabled: Binding<Bool> {
+    Binding(
+      get: { store.sendEmailNotifications && store.sendMobileNotifications },
+      set: { newValue in
+        store.send(.binding(.set(\.sendEmailNotifications, newValue)))
+        store.send(.binding(.set(\.sendMobileNotifications, newValue)))
+      }
+    )
+  }
+}
+```
+
+### Debounced bindings
+
+For expensive operations, debounce binding changes:
+
+```swift
+var body: some Reducer<State, Action> {
+  BindingReducer()
+    .onChange(of: \.searchQuery) { oldValue, newValue in
+      Reduce { state, action in
+        return .run { send in
+          try await Task.sleep(for: .milliseconds(300))
+          await send(.performSearch(newValue))
+        }
+        .cancellable(id: CancelID.search)
+      }
+    }
+}
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Binding not updating the view">
+    Make sure:
+    1. Your store is marked with `@Bindable` (or `@Perception.Bindable` for iOS 16)
+    2. Your `State` is marked with `@ObservableState`
+    3. You're using `$store` syntax to derive bindings
+  </Accordion>
+  
+  <Accordion title="Compilation error with @Bindable">
+    If targeting iOS 16 or earlier, use the backported version:
+    
+    ```swift
+    @Perception.Bindable var store: StoreOf<Settings>
+    ```
+  </Accordion>
+  
+  <Accordion title="Action not being sent">
+    Verify that:
+    1. `BindingReducer()` is in your reducer's body
+    2. Your action enum conforms to `BindableAction`
+    3. You have a `case binding(BindingAction<State>)` in your action enum
+  </Accordion>
+</AccordionGroup>

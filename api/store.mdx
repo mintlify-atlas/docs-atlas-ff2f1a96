@@ -1,0 +1,254 @@
+---
+title: Store
+description: The runtime that powers your application
+---
+
+A store represents the runtime that powers the application. It is the object that you will pass around to views that need to interact with the application.
+
+## Class Definition
+
+```swift
+@MainActor
+public final class Store<State, Action>
+```
+
+## Initialization
+
+<ParamField path="init(initialState:reducer:withDependencies:)" type="initializer">
+  Initializes a store from an initial state and a reducer.
+  
+  **Parameters:**
+  - `initialState`: The state to start the application in
+  - `reducer`: The reducer that powers the business logic of the application
+  - `prepareDependencies`: A closure that can be used to override dependencies that will be accessed by the reducer
+  
+  ```swift
+  public convenience init<R: Reducer<State, Action>>(
+    initialState: @autoclosure () -> R.State,
+    @ReducerBuilder<State, Action> reducer: () -> R,
+    withDependencies prepareDependencies: ((inout DependencyValues) -> Void)? = nil
+  )
+  ```
+</ParamField>
+
+## Usage Example
+
+You will typically construct a single store at the root of your application:
+
+```swift
+@main
+struct MyApp: App {
+  var body: some Scene {
+    WindowGroup {
+      RootView(
+        store: Store(initialState: AppFeature.State()) {
+          AppFeature()
+        }
+      )
+    }
+  }
+}
+```
+
+## Methods
+
+### Sending Actions
+
+<ParamField path="send(_:)" type="(Action) -> StoreTask">
+  Sends an action to the store.
+  
+  This method returns a `StoreTask`, which represents the lifecycle of the effect started from sending an action. You can use this value to tie the effect's lifecycle and cancellation to an asynchronous context, such as SwiftUI's `task` view modifier:
+  
+  ```swift
+  .task { await store.send(.task).finish() }
+  ```
+  
+  **Returns:** A `StoreTask` that represents the lifecycle of the effect executed when sending the action.
+</ParamField>
+
+<ParamField path="send(_:animation:)" type="(Action, Animation?) -> StoreTask">
+  Sends an action to the store with a given animation.
+  
+  **Parameters:**
+  - `action`: An action
+  - `animation`: An animation
+</ParamField>
+
+<ParamField path="send(_:transaction:)" type="(Action, Transaction) -> StoreTask">
+  Sends an action to the store with a given transaction.
+  
+  **Parameters:**
+  - `action`: An action
+  - `transaction`: A transaction
+</ParamField>
+
+### Scoping
+
+<ParamField path="scope(state:action:)" type="<ChildState, ChildAction>(KeyPath<State, ChildState>, CaseKeyPath<Action, ChildAction>) -> Store<ChildState, ChildAction>">
+  Scopes the store to one that exposes child state and actions.
+  
+  This can be useful for deriving new stores to hand to child views in an application:
+  
+  ```swift
+  @Reducer
+  struct AppFeature {
+    @ObservableState
+    struct State {
+      var login: Login.State
+      // ...
+    }
+    enum Action {
+      case login(Login.Action)
+      // ...
+    }
+    // ...
+  }
+  
+  // A store that runs the entire application
+  let store = Store(initialState: AppFeature.State()) {
+    AppFeature()
+  }
+  
+  // Construct a login view by scoping the store
+  // to one that works with only login domain
+  LoginView(
+    store: store.scope(state: \.login, action: \.login)
+  )
+  ```
+  
+  Scoping in this fashion allows you to better modularize your application.
+  
+  **Parameters:**
+  - `state`: A key path from `State` to `ChildState`
+  - `action`: A case key path from `Action` to `ChildAction`
+  
+  **Returns:** A new store with its domain (state and action) transformed.
+</ParamField>
+
+### State Access
+
+<ParamField path="withState(_:)" type="<R>((_ state: State) -> R) -> R">
+  Calls the given closure with a snapshot of the current state of the store.
+  
+  A lightweight way of accessing store state when state is not observable and `state` property is unavailable.
+  
+  **Parameters:**
+  - `body`: A closure that takes the current state of the store as its sole argument. If the closure has a return value, that value is also used as the return value of the `withState` method.
+  
+  **Returns:** The return value, if any, of the `body` closure.
+</ParamField>
+
+## Properties
+
+<ParamField path="publisher" type="StorePublisher<State>">
+  A publisher that emits when state changes.
+  
+  This publisher supports dynamic member lookup so that you can pluck out a specific field in the state:
+  
+  ```swift
+  store.publisher.alert
+    .sink { ... }
+  ```
+</ParamField>
+
+## Scoping Example
+
+For a tab view application with multiple tabs:
+
+```swift
+@Reducer
+struct AppFeature {
+  struct State {
+    var activity: Activity.State
+    var profile: Profile.State
+    var search: Search.State
+  }
+  
+  enum Action {
+    case activity(Activity.Action)
+    case profile(Profile.Action)
+    case search(Search.Action)
+  }
+  // ...
+}
+
+struct AppView: View {
+  let store: StoreOf<AppFeature>
+  
+  var body: some View {
+    TabView {
+      ActivityView(
+        store: store.scope(state: \.activity, action: \.activity)
+      )
+      .tabItem { Text("Activity") }
+      
+      SearchView(
+        store: store.scope(state: \.search, action: \.search)
+      )
+      .tabItem { Text("Search") }
+      
+      ProfileView(
+        store: store.scope(state: \.profile, action: \.profile)
+      )
+      .tabItem { Text("Profile") }
+    }
+  }
+}
+```
+
+## Type Aliases
+
+<ParamField path="StoreOf" type="typealias">
+  A convenience type alias for referring to a store of a given reducer's domain.
+  
+  ```swift
+  public typealias StoreOf<R: Reducer> = Store<R.State, R.Action>
+  ```
+  
+  Instead of specifying two generics:
+  
+  ```swift
+  let store: Store<Feature.State, Feature.Action>
+  ```
+  
+  You can specify a single generic:
+  
+  ```swift
+  let store: StoreOf<Feature>
+  ```
+</ParamField>
+
+## Supporting Types
+
+### StoreTask
+
+```swift
+public struct StoreTask: Hashable, Sendable
+```
+
+The type returned from `Store.send(_:)` that represents the lifecycle of the effect started from sending an action.
+
+**Methods:**
+- `cancel()`: Cancels the underlying task
+- `finish()`: Waits for the task to finish
+- `isCancelled`: A Boolean value that indicates whether the task should stop executing
+
+**Example:**
+
+```swift
+.task { await store.send(.task).finish() }
+```
+
+### StorePublisher
+
+```swift
+public struct StorePublisher<State>: Publisher
+```
+
+A publisher of store state that supports dynamic member lookup for plucking specific fields.
+
+## ObservableObject Conformance
+
+The store conforms to `ObservableObject` but is _not_ observable via the `@ObservedObject` property wrapper. This conformance is completely inert and its sole purpose is to allow stores to be held in SwiftUI's `@StateObject` property wrapper.
+
+Instead, stores should be observed through Swift's Observation framework (or the Perception package when targeting iOS &lt;17) by applying the `@ObservableState()` macro to your feature's state.

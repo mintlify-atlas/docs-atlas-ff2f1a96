@@ -1,80 +1,371 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick start
+description: Build your first feature with TCA in minutes with this step-by-step guide
 ---
 
-## Get started in three steps
+# Quick start
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through building a simple counter feature with TCA. You'll learn how to manage state, handle actions, execute side effects, and write tests.
 
-### Step 1: Set up your local environment
+<Note>
+  For a more in-depth, interactive tutorial, check out [Meet the Composable Architecture](https://swiftpackageindex.com/pointfreeco/swift-composable-architecture/main/tutorials/meetcomposablearchitecture).
+</Note>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## What you'll build
+
+You'll build a feature that displays a number along with increment and decrement buttons. It will also have a button that fetches a random fact about the current number from an API and displays it.
+
+## Step 1: Create the reducer
+
+First, create a new type annotated with the `@Reducer` macro. This will house the domain and behavior of your feature.
+
+```swift
+import ComposableArchitecture
+
+@Reducer
+struct Feature {
+}
+```
+
+## Step 2: Define the state
+
+Inside your reducer, define a `State` type that describes all the data your feature needs. Apply the `@ObservableState` macro to take advantage of Swift's observation tools.
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State: Equatable {
+    var count = 0
+    var numberFact: String?
+  }
+}
+```
+
+The state contains:
+- `count`: The current number to display
+- `numberFact`: An optional string for the fetched fact
+
+## Step 3: Define actions
+
+Define an `Action` enum that represents all the actions that can happen in your feature.
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State: Equatable {
+    var count = 0
+    var numberFact: String?
+  }
+  
+  enum Action {
+    case decrementButtonTapped
+    case incrementButtonTapped
+    case numberFactButtonTapped
+    case numberFactResponse(String)
+  }
+}
+```
+
+The actions include:
+- User interactions: increment, decrement, and fact button taps
+- System events: receiving the fact response from the API
+
+## Step 4: Implement the reducer
+
+Implement the `body` property to describe how state evolves when actions occur.
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State: Equatable { /* ... */ }
+  
+  enum Action { /* ... */ }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .decrementButtonTapped:
+        state.count -= 1
+        return .none
+        
+      case .incrementButtonTapped:
+        state.count += 1
+        return .none
+        
+      case .numberFactButtonTapped:
+        return .run { [count = state.count] send in
+          let (data, _) = try await URLSession.shared.data(
+            from: URL(string: "http://numbersapi.com/\(count)/trivia")!
+          )
+          await send(
+            .numberFactResponse(String(decoding: data, as: UTF8.self))
+          )
+        }
+        
+      case let .numberFactResponse(fact):
+        state.numberFact = fact
+        return .none
+      }
+    }
+  }
+}
+```
+
+<Note>
+  Actions that don't need to execute side effects return `.none`. The fact button returns a `.run` effect that performs an asynchronous API request.
+</Note>
+
+## Step 5: Build the view
+
+Create a SwiftUI view that holds a `StoreOf<Feature>` to observe state and send actions.
+
+<CodeGroup>
+```swift SwiftUI
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    Form {
+      Section {
+        Text("\(store.count)")
+        Button("Decrement") { store.send(.decrementButtonTapped) }
+        Button("Increment") { store.send(.incrementButtonTapped) }
+      }
+      
+      Section {
+        Button("Number fact") { store.send(.numberFactButtonTapped) }
+      }
+      
+      if let fact = store.numberFact {
+        Text(fact)
+      }
+    }
+  }
+}
+```
+
+```swift UIKit
+class FeatureViewController: UIViewController {
+  let store: StoreOf<Feature>
+  
+  init(store: StoreOf<Feature>) {
+    self.store = store
+    super.init(nibName: nil, bundle: nil)
+  }
+  
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+  
+  override func viewDidLoad() {
+    super.viewDidLoad()
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    let countLabel = UILabel()
+    let decrementButton = UIButton()
+    let incrementButton = UIButton()
+    let factLabel = UILabel()
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    // Add subviews and set up constraints...
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    observe { [weak self] in
+      guard let self else { return }
+      
+      countLabel.text = "\(self.store.count)"
+      factLabel.text = self.store.numberFact
+    }
+  }
+  
+  @objc private func incrementButtonTapped() {
+    store.send(.incrementButtonTapped)
+  }
+  
+  @objc private func decrementButtonTapped() {
+    store.send(.decrementButtonTapped)
+  }
+  
+  @objc private func factButtonTapped() {
+    store.send(.numberFactButtonTapped)
+  }
+}
+```
+</CodeGroup>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Step 6: Create the store
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+At your app's entry point, construct a store with initial state and the reducer.
 
-### Step 3: Go live
+```swift
+import ComposableArchitecture
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+@main
+struct MyApp: App {
+  var body: some Scene {
+    WindowGroup {
+      FeatureView(
+        store: Store(initialState: Feature.State()) {
+          Feature()
+        }
+      )
+    }
+  }
+}
+```
+
+## Step 7: Test your feature
+
+TCA makes testing straightforward. Use `TestStore` to assert how your feature evolves over time.
+
+```swift
+import ComposableArchitecture
+import XCTest
+
+@Test
+func basics() async {
+  let store = TestStore(initialState: Feature.State()) {
+    Feature()
+  } withDependencies: {
+    $0.numberFact.fetch = { "\($0) is a good number Brent" }
+  }
+  
+  // Test increment
+  await store.send(.incrementButtonTapped) {
+    $0.count = 1
+  }
+  
+  // Test decrement
+  await store.send(.decrementButtonTapped) {
+    $0.count = 0
+  }
+  
+  // Test fetching fact
+  await store.send(.numberFactButtonTapped)
+  
+  await store.receive(\.numberFactResponse) {
+    $0.numberFact = "0 is a good number Brent"
+  }
+}
+```
+
+<Warning>
+  The test above won't compile yet because we haven't extracted the number fact dependency. Continue to the next step to fix this.
+</Warning>
+
+## Step 8: Extract dependencies
+
+To make your feature testable, extract the API dependency so you can control it in tests.
+
+<Steps>
+  <Step title="Create a dependency client">
+    ```swift
+    struct NumberFactClient {
+      var fetch: (Int) async throws -> String
+    }
+    ```
+  </Step>
+  
+  <Step title="Register with the dependency system">
+    ```swift
+    extension NumberFactClient: DependencyKey {
+      static let liveValue = Self(
+        fetch: { number in
+          let (data, _) = try await URLSession.shared.data(
+            from: URL(string: "http://numbersapi.com/\(number)")!
+          )
+          return String(decoding: data, as: UTF8.self)
+        }
+      )
+    }
+    
+    extension DependencyValues {
+      var numberFact: NumberFactClient {
+        get { self[NumberFactClient.self] }
+        set { self[NumberFactClient.self] = newValue }
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Use the dependency in your reducer">
+    ```swift
+    @Reducer
+    struct Feature {
+      @Dependency(\.numberFact) var numberFact
+      
+      // ...
+      
+      var body: some Reducer<State, Action> {
+        Reduce { state, action in
+          switch action {
+          // ...
+          
+          case .numberFactButtonTapped:
+            return .run { [count = state.count] send in
+              let fact = try await self.numberFact.fetch(count)
+              await send(.numberFactResponse(fact))
+            }
+          
+          // ...
+          }
+        }
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+Now your test will compile and run! The test dependency is automatically used in tests, while the live dependency runs in the app.
+
+## What you learned
+
+In this quick start guide, you:
+
+<CardGroup cols={2}>
+  <Card title="Defined state" icon="database">
+    Created a state type with `@ObservableState` to hold feature data
+  </Card>
+  
+  <Card title="Handled actions" icon="hand-pointer">
+    Defined an action enum for user interactions and system events
+  </Card>
+  
+  <Card title="Implemented logic" icon="code">
+    Used the `Reduce` reducer to evolve state based on actions
+  </Card>
+  
+  <Card title="Executed effects" icon="network-wired">
+    Used `.run` to perform asynchronous API requests
+  </Card>
+  
+  <Card title="Built the UI" icon="window">
+    Created views that observe the store and send actions
+  </Card>
+  
+  <Card title="Wrote tests" icon="flask">
+    Used `TestStore` to verify feature behavior with mocked dependencies
+  </Card>
+</CardGroup>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+You've built your first TCA feature! Here's what to explore next:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Navigation" icon="map" href="https://swiftpackageindex.com/pointfreeco/swift-composable-architecture/main/documentation/composablearchitecture/navigation">
+    Learn how to navigate between features and manage navigation state
+  </Card>
+  
+  <Card title="Composition" icon="layer-group" href="https://swiftpackageindex.com/pointfreeco/swift-composable-architecture/main/documentation/composablearchitecture/gettingstarted#Composing-features">
+    Break down large features into smaller, reusable components
+  </Card>
+  
+  <Card title="Testing" icon="vial" href="https://swiftpackageindex.com/pointfreeco/swift-composable-architecture/main/documentation/composablearchitecture/testingtca">
+    Deep dive into testing strategies and best practices
+  </Card>
+  
+  <Card title="Examples" icon="code-branch" href="https://github.com/pointfreeco/swift-composable-architecture/tree/main/Examples">
+    Explore real-world example applications built with TCA
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

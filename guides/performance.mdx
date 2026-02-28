@@ -1,0 +1,399 @@
+---
+title: Performance Optimization
+description: Learn how to improve the performance of features built in the Composable Architecture
+icon: gauge-high
+---
+
+As your features and application grow, you may run into performance problems. This article outlines common pitfalls and how to fix them.
+
+## Sharing logic with actions
+
+There is a common pattern of using actions to share logic across multiple parts of a reducer. **This is inefficient.** Sending actions is not as lightweight as calling a method on a class.
+
+### The problem
+
+Suppose you want to run shared logic after three different actions:
+
+```swift
+@Reducer
+struct Feature {
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .buttonTapped:
+        state.count += 1
+        return .send(.sharedComputation)
+
+      case .toggleChanged:
+        state.isEnabled.toggle()
+        return .send(.sharedComputation)
+
+      case let .textFieldChanged(text):
+        state.description = text
+        return .send(.sharedComputation)
+
+      case .sharedComputation:
+        // Some shared work
+        return .run { send in
+          // A shared effect
+        }
+      }
+    }
+  }
+}
+```
+
+This sends **two actions** for every user action, which is inefficient.
+
+### Problems with this approach
+
+<CardGroup cols={3}>
+  <Card title="Performance" icon="gauge">
+    Two actions are processed for every user interaction
+  </Card>
+  <Card title="Inflexibility" icon="ban">
+    Shared logic must always run after, never before
+  </Card>
+  <Card title="Test bloat" icon="flask">
+    Tests must assert on internal shared actions
+  </Card>
+</CardGroup>
+
+### The solution
+
+Share logic using **methods** instead of actions:
+
+```swift
+@Reducer
+struct Feature {
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .buttonTapped:
+        state.count += 1
+        return self.sharedComputation(state: &state)
+
+      case .toggleChanged:
+        state.isEnabled.toggle()
+        return self.sharedComputation(state: &state)
+
+      case let .textFieldChanged(text):
+        state.description = text
+        return self.sharedComputation(state: &state)
+      }
+    }
+  }
+
+  func sharedComputation(state: inout State) -> Effect<Action> {
+    // Some shared work to compute something.
+    return .run { send in
+      // A shared effect to compute something
+    }
+  }
+}
+```
+
+<Steps>
+  <Step title="Define a method on your reducer">
+    The method can take `inout State` if it needs to mutate state, and return `Effect<Action>` if it needs to run effects.
+  </Step>
+  
+  <Step title="Call the method directly">
+    Call it from any action handler without sending additional actions.
+  </Step>
+  
+  <Step title="Enjoy the flexibility">
+    You can now run shared logic before, after, or between other logic:
+    
+    ```swift
+    case .buttonTapped:
+      let sharedEffect = self.sharedComputation(state: &state)
+      state.count += 1
+      return sharedEffect
+    ```
+  </Step>
+</Steps>
+
+### Testing improvements
+
+Tests become more streamlined:
+
+<CodeGroup>
+```swift Before (with actions)
+await store.send(.buttonTapped) {
+  $0.count = 1
+}
+await store.receive(\.sharedComputation) {
+  // Assert on shared logic
+}
+await store.send(.toggleChanged) {
+  $0.isEnabled = true
+}
+await store.receive(\.sharedComputation) {
+  // Assert on shared logic again
+}
+```
+
+```swift After (with methods)
+await store.send(.buttonTapped) {
+  $0.count = 1
+  // Assert on shared logic here
+}
+await store.send(.toggleChanged) {
+  $0.isEnabled = true
+  // Assert on shared logic here
+}
+```
+</CodeGroup>
+
+## CPU-intensive calculations
+
+Reducers run on the main thread and are not appropriate for intense CPU work.
+
+<Warning>
+  Never perform CPU-intensive work directly in a reducer. It will block the main thread.
+</Warning>
+
+### The problem
+
+```swift
+case .buttonTapped:
+  var result = // ...
+  for value in someLargeCollection {
+    // Some intense computation with value
+  }
+  state.result = result
+```
+
+### The solution
+
+Return an effect to perform work in the cooperative thread pool:
+
+```swift
+case .buttonTapped:
+  return .run { send in
+    var result = // ...
+    for (index, value) in someLargeCollection.enumerated() {
+      // Some intense computation with value
+
+      // Yield every once in a while to cooperate in the thread pool
+      if index.isMultiple(of: 1_000) {
+        await Task.yield()
+      }
+    }
+    await send(.computationResponse(result))
+  }
+
+case let .computationResponse(result):
+  state.result = result
+```
+
+<Tip>
+  Sprinkle in `Task.yield()` periodically to avoid blocking threads in the cooperative pool.
+</Tip>
+
+## High-frequency actions
+
+Sending actions comes with a cost. Avoid high-frequency actions unless your application truly needs them.
+
+### Example: Reporting progress
+
+Instead of reporting progress for every step:
+
+```swift
+case .startButtonTapped:
+  return .run { send in
+    var count = 0
+    let max = await self.eventsClient.count()
+
+    for await event in self.eventsClient.events() {
+      defer { count += 1 }
+      await send(.progress(Double(count) / Double(max)))  // ❌ Too many!
+    }
+  }
+```
+
+Report it periodically:
+
+```swift
+case .startButtonTapped:
+  return .run { send in
+    var count = 0
+    let max = await self.eventsClient.count()
+    let interval = max / 100  // Report at most 100 times
+
+    for await event in self.eventsClient.events() {
+      defer { count += 1 }
+      if count.isMultiple(of: interval) {
+        await send(.progress(Double(count) / Double(max)))  // ✅ Much better!
+      }
+    }
+  }
+```
+
+### Example: Sliders
+
+Deriving a binding directly from the store sends an action for every pixel:
+
+```swift
+Slider(value: $store.opacity, in: 0...1)  // ❌ Sends dozens of actions
+```
+
+Instead, use local `@State` and send one action when done:
+
+```swift
+struct MyView: View {
+  let store: StoreOf<Feature>
+  @State var opacity = 0.5
+  
+  var body: some View {
+    Slider(value: self.$opacity, in: 0...1) {
+      self.store.send(.setOpacity(self.opacity))  // ✅ Sends once
+    }
+  }
+}
+```
+
+## Store scoping
+
+The most common form of scoping—scoping directly to child features—is the most performant and is the intended use.
+
+### Good scoping (performant)
+
+Scoping directly to child state and actions:
+
+```swift
+ChildView(
+  store: store.scope(state: \.child, action: \.child)
+)
+```
+
+Or for navigation:
+
+```swift
+.sheet(store: store.scope(state: \.child, action: \.child)) { store in
+  ChildView(store: store)
+}
+```
+
+### Problematic scoping
+
+Scoping on **computed** properties can cause performance issues:
+
+```swift
+extension ParentFeature.State {
+  var computedChild: ChildFeature.State {
+    ChildFeature.State(
+      // Heavy computation here...
+    )
+  }
+}
+```
+
+Then scoping:
+
+```swift
+ChildView(
+  store: store.scope(state: \.computedChild, action: \.child)  // ❌ Computed many times!
+)
+```
+
+<Warning>
+  In version 1.5+, scoped stores hold a reference to the root store and transform on access. Heavy computed properties will be invoked many times.
+</Warning>
+
+### The solution
+
+Use `scope` only along **stored properties** of child features:
+
+<Steps>
+  <Step title="Use stored properties">
+    ```swift
+    @ObservableState
+    struct State {
+      var child: ChildFeature.State  // ✅ Stored property
+    }
+    ```
+  </Step>
+  
+  <Step title="Move computation to child">
+    Push computed logic into the child view or reducer, towards the leaf nodes of your application.
+  </Step>
+</Steps>
+
+## Performance checklist
+
+Use this checklist to identify and fix performance issues:
+
+<AccordionGroup>
+  <Accordion title="Are you sharing logic with actions?">
+    ❌ Don't send actions for shared logic
+    
+    ✅ Use methods on your reducer instead
+  </Accordion>
+  
+  <Accordion title="Is CPU work in your reducer?">
+    ❌ Don't perform intense calculations in reducers
+    
+    ✅ Return effects that do work in the thread pool with periodic yields
+  </Accordion>
+  
+  <Accordion title="Are you sending high-frequency actions?">
+    ❌ Don't send dozens/hundreds of actions per second
+    
+    ✅ Throttle or debounce actions, or use local `@State`
+  </Accordion>
+  
+  <Accordion title="Are you scoping on computed properties?">
+    ❌ Don't use computed properties in `scope`
+    
+    ✅ Use stored properties and move computation to child features
+  </Accordion>
+</AccordionGroup>
+
+## Profiling tips
+
+<Steps>
+  <Step title="Use Instruments">
+    Profile your app with Xcode's Instruments to identify slow reducers and view bodies.
+  </Step>
+  
+  <Step title="Add print statements">
+    Put prints in computed properties to see how often they're invoked:
+    
+    ```swift
+    var computedChild: ChildFeature.State {
+      print("Computing child state")  // See how many times this prints!
+      return ChildFeature.State(/* ... */)
+    }
+    ```
+  </Step>
+  
+  <Step title="Measure action processing time">
+    Use the library's built-in instrumentation to see how long actions take:
+    
+    ```swift
+    let store = Store(initialState: Feature.State()) {
+      Feature()
+        ._printChanges()
+    }
+    ```
+  </Step>
+</Steps>
+
+## Summary
+
+<CardGroup cols={2}>
+  <Card title="Share logic with methods" icon="function">
+    Not actions
+  </Card>
+  <Card title="CPU work in effects" icon="gears">
+    Not reducers
+  </Card>
+  <Card title="Throttle high-frequency actions" icon="stopwatch">
+    Or use local state
+  </Card>
+  <Card title="Scope stored properties" icon="diagram-project">
+    Not computed properties
+  </Card>
+</CardGroup>

@@ -1,0 +1,226 @@
+---
+title: SwitchStore
+description: A deprecated SwiftUI view for switching over enum state (use native switch instead)
+group: SwiftUI Integration
+---
+
+<Warning>
+  `SwitchStore` is deprecated. Use Swift's native `switch` statement with observable state instead. See the [migration guide](https://swiftpackageindex.com/pointfreeco/swift-composable-architecture/main/documentation/composablearchitecture/migratingto1.7#Replacing-SwitchStore-and-CaseLet-with-switch-and-case) for more information.
+</Warning>
+
+`SwitchStore` was a SwiftUI view used to switch over enum state and render different views for each case. Modern TCA allows you to use Swift's native `switch` statement directly.
+
+## Declaration
+
+```swift
+public struct SwitchStore<State, Action, Content: View>: View
+```
+
+## Overview
+
+`SwitchStore` was designed to work with enum-based state to show different views depending on which case is active. It worked in conjunction with `CaseLet` to extract associated values and scope the store.
+
+### Legacy Usage (Deprecated)
+
+```swift
+enum Path {
+  case home
+  case detail(Detail.State)
+  case settings(Settings.State)
+}
+
+SwitchStore(store) { state in
+  switch state {
+  case .home:
+    HomeView()
+  case .detail:
+    CaseLet(/Path.detail, action: Path.detail) { store in
+      DetailView(store: store)
+    }
+  case .settings:
+    CaseLet(/Path.settings, action: Path.settings) { store in
+      SettingsView(store: store)
+    }
+  }
+}
+```
+
+### Modern Approach (Recommended)
+
+With `@ObservableState`, use Swift's native `switch` statement:
+
+```swift
+@Reducer
+struct AppFeature {
+  @ObservableState
+  enum State {
+    case home
+    case detail(Detail.State)
+    case settings(Settings.State)
+  }
+  
+  enum Action {
+    case home(Home.Action)
+    case detail(Detail.Action)
+    case settings(Settings.Action)
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      // Handle actions
+    }
+    .ifCaseLet(/State.detail, action: /Action.detail) {
+      Detail()
+    }
+    .ifCaseLet(/State.settings, action: /Action.settings) {
+      Settings()
+    }
+  }
+}
+
+struct AppView: View {
+  let store: StoreOf<AppFeature>
+  
+  var body: some View {
+    switch store.state {
+    case .home:
+      HomeView()
+    case .detail:
+      if let store = store.scope(state: \.detail, action: \.detail) {
+        DetailView(store: store)
+      }
+    case .settings:
+      if let store = store.scope(state: \.settings, action: \.settings) {
+        SettingsView(store: store)
+      }
+    }
+  }
+}
+```
+
+## Parameters
+
+### Legacy SwitchStore Parameters
+
+- `store`: The store containing enum state
+- `content`: A view builder that switches over the state and returns appropriate views
+
+## Migration Guide
+
+### Step 1: Add @ObservableState
+
+Ensure your state enum has the `@ObservableState` macro:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState  // Add this
+  enum State {
+    case loading
+    case loaded(Data)
+    case error(Error)
+  }
+  // ...
+}
+```
+
+### Step 2: Replace SwitchStore with switch
+
+Replace `SwitchStore` with a native Swift `switch`:
+
+```swift
+// Before
+SwitchStore(store) { state in
+  switch state {
+  case .loading:
+    LoadingView()
+  case .loaded:
+    CaseLet(/State.loaded, action: State.loaded) { store in
+      LoadedView(store: store)
+    }
+  case .error:
+    ErrorView()
+  }
+}
+
+// After
+switch store.state {
+case .loading:
+  LoadingView()
+case .loaded:
+  if let store = store.scope(state: \.loaded, action: \.loaded) {
+    LoadedView(store: store)
+  }
+case .error:
+  ErrorView()
+}
+```
+
+### Step 3: Remove CaseLet
+
+Replace `CaseLet` with optional binding and `store.scope`:
+
+```swift
+// Before
+CaseLet(/State.detail, action: Action.detail) { detailStore in
+  DetailView(store: detailStore)
+}
+
+// After
+if let detailStore = store.scope(state: \.detail, action: \.detail) {
+  DetailView(store: detailStore)
+}
+```
+
+## Working with Optional State
+
+For optional enum cases, combine `switch` with `if let`:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State {
+    var destination: Destination?
+  }
+  
+  @ObservableState
+  enum Destination {
+    case alert(AlertState<Action.Alert>)
+    case detail(Detail.State)
+  }
+  
+  enum Action {
+    case destination(Destination.Action)
+    // ...
+  }
+}
+
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    Form {
+      // Main content
+    }
+    .sheet(item: $store.scope(state: \.destination?.detail, action: \.destination.detail)) { detailStore in
+      DetailView(store: detailStore)
+    }
+  }
+}
+```
+
+## Benefits of Migration
+
+- **Native Swift**: Use familiar `switch` syntax instead of custom views
+- **Better Performance**: Less view overhead
+- **Type Safety**: Compiler-enforced exhaustiveness checking
+- **Simpler Code**: Fewer custom types to learn
+- **Better Debugging**: Standard Swift control flow
+
+## See Also
+
+- `@ObservableState`: Makes state observable using Swift's Observation framework
+- `Store.scope`: Transforms a store to work with child state and actions
+- `ifCaseLet`: Reducer operator for handling enum cases
+- [Migration Guide](https://swiftpackageindex.com/pointfreeco/swift-composable-architecture/main/documentation/composablearchitecture/migratingto1.7#Replacing-SwitchStore-and-CaseLet-with-switch-and-case)

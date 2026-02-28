@@ -1,0 +1,389 @@
+---
+title: '@Dependency'
+description: A property wrapper that provides access to dependencies in reducers
+---
+
+## Overview
+
+The `@Dependency` property wrapper allows you to access dependencies from anywhere in your reducer. Dependencies are external systems your features need to interact with, such as API clients, date generators, UUID generators, clocks, and more.
+
+This property wrapper is provided by the [swift-dependencies](https://github.com/pointfreeco/swift-dependencies) library, which is integrated into The Composable Architecture.
+
+## Why Use Dependencies?
+
+Controlling dependencies provides several benefits:
+
+- **Testability**: Replace real implementations with mocks in tests
+- **Previews**: Provide fake data for SwiftUI previews
+- **Determinism**: Control random or time-based values for consistent behavior
+- **Separation of concerns**: Keep feature logic separate from implementation details
+
+## Basic Usage
+
+Use `@Dependency` with a key path to access any registered dependency:
+
+```swift
+@Reducer
+struct Feature {
+  struct State {
+    var currentDate: Date?
+    var id: UUID?
+  }
+  
+  enum Action {
+    case loadDataTapped
+    case generateIDTapped
+  }
+  
+  @Dependency(\.date.now) var now
+  @Dependency(\.uuid) var uuid
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      switch action {
+      case .loadDataTapped:
+        state.currentDate = now
+        return .none
+        
+      case .generateIDTapped:
+        state.id = uuid()
+        return .none
+      }
+    }
+  }
+}
+```
+
+## Accessing Dependencies in Effects
+
+Dependencies are automatically propagated to effects:
+
+```swift
+@Reducer
+struct Feature {
+  struct State { /* ... */ }
+  
+  enum Action {
+    case fetchDataTapped
+    case dataResponse(Result<Data, Error>)
+  }
+  
+  @Dependency(\.apiClient) var apiClient
+  @Dependency(\.continuousClock) var clock
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      switch action {
+      case .fetchDataTapped:
+        return .run { send in
+          // Dependencies available in effect closure
+          try await clock.sleep(for: .seconds(1))
+          
+          do {
+            let data = try await apiClient.fetchData()
+            await send(.dataResponse(.success(data)))
+          } catch {
+            await send(.dataResponse(.failure(error)))
+          }
+        }
+        
+      case .dataResponse:
+        return .none
+      }
+    }
+  }
+}
+```
+
+## Built-in Dependencies
+
+The Composable Architecture provides several built-in dependencies:
+
+### Date and Time
+
+```swift
+@Dependency(\.date.now) var now: Date
+@Dependency(\.date) var date  // Full DateGenerator
+```
+
+### UUID Generation
+
+```swift
+@Dependency(\.uuid) var uuid: () -> UUID
+```
+
+### Clocks
+
+```swift
+@Dependency(\.continuousClock) var clock: any Clock<Duration>
+@Dependency(\.suspendingClock) var suspendingClock
+```
+
+### Dismissal
+
+```swift
+@Dependency(\.dismiss) var dismiss: DismissEffect
+```
+
+Use in child features to dismiss themselves:
+
+```swift
+@Reducer
+struct ChildFeature {
+  struct State { /* ... */ }
+  
+  enum Action {
+    case closeButtonTapped
+  }
+  
+  @Dependency(\.dismiss) var dismiss
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      switch action {
+      case .closeButtonTapped:
+        return .run { _ in
+          await dismiss()
+        }
+      }
+    }
+  }
+}
+```
+
+### Presentation State
+
+```swift
+@Dependency(\.isPresented) var isPresented: Bool
+```
+
+Check if the feature is currently presented:
+
+```swift
+@Reducer
+struct Feature {
+  @Dependency(\.isPresented) var isPresented
+  @Dependency(\.dismiss) var dismiss
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      switch action {
+      case .closeButtonTapped:
+        if isPresented {
+          return .run { _ in await dismiss() }
+        } else {
+          // Handle differently when not presented
+          return .none
+        }
+      }
+    }
+  }
+}
+```
+
+## Creating Custom Dependencies
+
+Define your own dependencies by conforming to `DependencyKey`:
+
+```swift
+import Dependencies
+
+// 1. Define your dependency type
+struct APIClient {
+  var fetchUser: (User.ID) async throws -> User
+  var updateUser: (User) async throws -> User
+  var deleteUser: (User.ID) async throws -> Void
+}
+
+// 2. Create a dependency key
+enum APIClientKey: DependencyKey {
+  static let liveValue = APIClient(
+    fetchUser: { id in
+      let (data, _) = try await URLSession.shared.data(
+        from: URL(string: "https://api.example.com/users/\(id)")!
+      )
+      return try JSONDecoder().decode(User.self, from: data)
+    },
+    updateUser: { user in
+      // Real implementation
+      // ...
+    },
+    deleteUser: { id in
+      // Real implementation
+      // ...
+    }
+  )
+}
+
+// 3. Extend DependencyValues
+extension DependencyValues {
+  var apiClient: APIClient {
+    get { self[APIClientKey.self] }
+    set { self[APIClientKey.self] = newValue }
+  }
+}
+
+// 4. Use in your reducer
+@Reducer
+struct Feature {
+  @Dependency(\.apiClient) var apiClient
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      switch action {
+      case .loadUser(let id):
+        return .run { send in
+          let user = try await apiClient.fetchUser(id)
+          await send(.userLoaded(user))
+        }
+      }
+    }
+  }
+}
+```
+
+## Testing with Dependencies
+
+Override dependencies in tests using `withDependencies`:
+
+```swift
+@Test
+func testFeature() async {
+  let store = TestStore(initialState: Feature.State()) {
+    Feature()
+  } withDependencies: {
+    // Override specific dependencies
+    $0.date.now = Date(timeIntervalSince1970: 1234567890)
+    $0.uuid = UUID.incrementing
+    $0.apiClient.fetchData = { 
+      // Return mock data
+      return mockData
+    }
+  }
+  
+  await store.send(.loadDataTapped) {
+    $0.currentDate = Date(timeIntervalSince1970: 1234567890)
+  }
+}
+```
+
+## Overriding Dependencies for Specific Reducers
+
+Override dependencies for a specific reducer and all its children:
+
+```swift
+@Reducer
+struct AppFeature {
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      // App logic
+      return .none
+    }
+    
+    // Override dependencies for onboarding
+    Scope(state: \.onboarding, action: \.onboarding) {
+      OnboardingFeature()
+        .dependency(\.database, .mock)  // Use mock database
+        .dependency(\.analytics, .noop) // Don't track analytics
+    }
+  }
+}
+```
+
+## Test Dependencies
+
+Provide test-only implementations using `testValue`:
+
+```swift
+enum APIClientKey: DependencyKey {
+  static let liveValue = APIClient(
+    fetchUser: { /* real implementation */ }
+  )
+  
+  static let testValue = APIClient(
+    fetchUser: { _ in
+      XCTFail("APIClient.fetchUser not implemented in test")
+      throw TestError()
+    }
+  )
+}
+```
+
+This causes tests to fail if a dependency is used without being explicitly overridden.
+
+## Preview Dependencies
+
+Provide preview data for SwiftUI previews:
+
+```swift
+#Preview {
+  FeatureView(
+    store: Store(initialState: Feature.State()) {
+      Feature()
+    } withDependencies: {
+      $0.apiClient.fetchUser = { _ in
+        User(id: 1, name: "Preview User", email: "preview@example.com")
+      }
+      $0.date.now = Date()
+    }
+  )
+}
+```
+
+## Accessing All Dependencies
+
+Access the entire dependency container:
+
+```swift
+@Dependency(\.self) var dependencies: DependencyValues
+```
+
+This is useful for passing dependencies to other systems or for debugging.
+
+## Best Practices
+
+1. **Define clear interfaces**: Keep dependency types focused and interface-oriented
+2. **Provide test values**: Always define `testValue` to catch unimplemented dependencies in tests
+3. **Use live values for previews**: Or provide realistic mock data for a better preview experience
+4. **Avoid side effects in init**: Don't perform work when creating dependency values
+5. **Make dependencies async when appropriate**: Use `async` for operations that involve waiting
+
+## Common Patterns
+
+### Optional Dependencies
+
+For dependencies that may not always be available:
+
+```swift
+extension DependencyValues {
+  var optionalClient: APIClient? {
+    get { self[OptionalClientKey.self] }
+    set { self[OptionalClientKey.self] = newValue }
+  }
+}
+
+enum OptionalClientKey: DependencyKey {
+  static let liveValue: APIClient? = nil
+}
+```
+
+### Throwing Dependencies
+
+For test dependencies that should fail:
+
+```swift
+extension APIClient {
+  static let failing = Self(
+    fetchUser: { _ in
+      struct Unimplemented: Error {}
+      throw Unimplemented()
+    }
+  )
+}
+```
+
+## See Also
+
+- [Reducer Macro](/api/reducer-macro) - Define features with dependencies
+- [swift-dependencies documentation](https://swiftpackageindex.com/pointfreeco/swift-dependencies/main/documentation/dependencies)
+- [Dependency Management Guide](/guides/dependencies) - Comprehensive guide to dependencies in TCA

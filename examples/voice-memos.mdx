@@ -1,0 +1,563 @@
+---
+title: Voice Memos
+description: Record and play audio with permissions, state machines, and custom dependencies
+---
+
+The Voice Memos example demonstrates how to build a feature that interacts with device capabilities like the microphone and audio system. It showcases permission handling, audio recording and playback, and complex async effects.
+
+## Overview
+
+This example shows how to:
+- Request and handle permissions
+- Record audio with real-time feedback
+- Play audio with progress tracking
+- Model complex state with enums
+- Create custom dependency clients
+- Coordinate multiple async effects
+
+## Implementation
+
+<CodeGroup>
+
+```swift VoiceMemos Reducer
+import AVFoundation
+import ComposableArchitecture
+import SwiftUI
+
+@Reducer
+struct VoiceMemos {
+  @ObservableState
+  struct State: Equatable {
+    @Presents var alert: AlertState<Action.Alert>?
+    var audioRecorderPermission = RecorderPermission.undetermined
+    @Presents var recordingMemo: RecordingMemo.State?
+    var voiceMemos: IdentifiedArrayOf<VoiceMemo.State> = []
+
+    enum RecorderPermission {
+      case allowed
+      case denied
+      case undetermined
+    }
+  }
+
+  enum Action: Sendable {
+    case alert(PresentationAction<Alert>)
+    case onDelete(IndexSet)
+    case openSettingsButtonTapped
+    case recordButtonTapped
+    case recordPermissionResponse(Bool)
+    case recordingMemo(PresentationAction<RecordingMemo.Action>)
+    case voiceMemos(IdentifiedActionOf<VoiceMemo>)
+
+    enum Alert: Equatable {}
+  }
+
+  @Dependency(\.audioRecorder.requestRecordPermission) var requestRecordPermission
+  @Dependency(\.date) var date
+  @Dependency(\.openSettings) var openSettings
+  @Dependency(\.temporaryDirectory) var temporaryDirectory
+  @Dependency(\.uuid) var uuid
+
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .alert:
+        return .none
+
+      case .onDelete(let indexSet):
+        state.voiceMemos.remove(atOffsets: indexSet)
+        return .none
+
+      case .openSettingsButtonTapped:
+        return .run { _ in
+          await self.openSettings()
+        }
+
+      case .recordButtonTapped:
+        switch state.audioRecorderPermission {
+        case .undetermined:
+          return .run { send in
+            await send(
+              .recordPermissionResponse(
+                self.requestRecordPermission()
+              )
+            )
+          }
+
+        case .denied:
+          state.alert = AlertState {
+            TextState("Permission is required to record voice memos.")
+          }
+          return .none
+
+        case .allowed:
+          state.recordingMemo = newRecordingMemo
+          return .none
+        }
+
+      case .recordingMemo(.presented(.delegate(.didFinish(.success(let recordingMemo))))):
+        state.recordingMemo = nil
+        state.voiceMemos.insert(
+          VoiceMemo.State(
+            date: recordingMemo.date,
+            duration: recordingMemo.duration,
+            url: recordingMemo.url
+          ),
+          at: 0
+        )
+        return .none
+
+      case .recordingMemo(.presented(.delegate(.didFinish(.failure)))):
+        state.alert = AlertState {
+          TextState("Voice memo recording failed.")
+        }
+        state.recordingMemo = nil
+        return .none
+
+      case .recordingMemo:
+        return .none
+
+      case .recordPermissionResponse(let permission):
+        state.audioRecorderPermission = permission ? .allowed : .denied
+        if permission {
+          state.recordingMemo = newRecordingMemo
+          return .none
+        } else {
+          state.alert = AlertState {
+            TextState("Permission is required to record voice memos.")
+          }
+          return .none
+        }
+
+      case .voiceMemos(.element(id: let id, action: .delegate(let delegateAction))):
+        switch delegateAction {
+        case .playbackFailed:
+          state.alert = AlertState {
+            TextState("Voice memo playback failed.")
+          }
+          return .none
+        case .playbackStarted:
+          for memoID in state.voiceMemos.ids where memoID != id {
+            state.voiceMemos[id: memoID]?.mode = .notPlaying
+          }
+          return .none
+        }
+
+      case .voiceMemos:
+        return .none
+      }
+    }
+    .ifLet(\.$alert, action: \.alert)
+    .ifLet(\.$recordingMemo, action: \.recordingMemo) {
+      RecordingMemo()
+    }
+    .forEach(\.voiceMemos, action: \.voiceMemos) {
+      VoiceMemo()
+    }
+  }
+
+  private var newRecordingMemo: RecordingMemo.State {
+    RecordingMemo.State(
+      date: self.date.now,
+      url: self.temporaryDirectory()
+        .appendingPathComponent(self.uuid().uuidString)
+        .appendingPathExtension("m4a")
+    )
+  }
+}
+```
+
+```swift VoiceMemo Reducer
+@Reducer
+struct VoiceMemo {
+  @ObservableState
+  struct State: Equatable, Identifiable {
+    var date: Date
+    var duration: TimeInterval
+    var mode = Mode.notPlaying
+    var title = ""
+    var url: URL
+
+    var id: URL { self.url }
+
+    @CasePathable
+    @dynamicMemberLookup
+    enum Mode: Equatable {
+      case notPlaying
+      case playing(progress: Double)
+    }
+  }
+
+  enum Action {
+    case audioPlayerClient(Result<Bool, any Error>)
+    case delegate(Delegate)
+    case playButtonTapped
+    case timerUpdated(TimeInterval)
+    case titleTextFieldChanged(String)
+
+    @CasePathable
+    enum Delegate {
+      case playbackStarted
+      case playbackFailed
+    }
+  }
+
+  @Dependency(\.audioPlayer) var audioPlayer
+  @Dependency(\.continuousClock) var clock
+  private enum CancelID { case play }
+
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .audioPlayerClient(.failure):
+        state.mode = .notPlaying
+        return .merge(
+          .cancel(id: CancelID.play),
+          .send(.delegate(.playbackFailed))
+        )
+
+      case .audioPlayerClient:
+        state.mode = .notPlaying
+        return .cancel(id: CancelID.play)
+
+      case .delegate:
+        return .none
+
+      case .playButtonTapped:
+        switch state.mode {
+        case .notPlaying:
+          state.mode = .playing(progress: 0)
+
+          return .run { [url = state.url] send in
+            await send(.delegate(.playbackStarted))
+
+            async let playAudio: Void = send(
+              .audioPlayerClient(
+                Result { try await self.audioPlayer.play(url: url) }
+              )
+            )
+
+            var start: TimeInterval = 0
+            for await _ in self.clock.timer(interval: .milliseconds(500)) {
+              start += 0.5
+              await send(.timerUpdated(start))
+            }
+
+            await playAudio
+          }
+          .cancellable(id: CancelID.play, cancelInFlight: true)
+
+        case .playing:
+          state.mode = .notPlaying
+          return .cancel(id: CancelID.play)
+        }
+
+      case .timerUpdated(let time):
+        switch state.mode {
+        case .notPlaying:
+          break
+        case .playing:
+          state.mode = .playing(progress: time / state.duration)
+        }
+        return .none
+
+      case .titleTextFieldChanged(let text):
+        state.title = text
+        return .none
+      }
+    }
+  }
+}
+```
+
+```swift View
+struct VoiceMemosView: View {
+  @Bindable var store: StoreOf<VoiceMemos>
+
+  var body: some View {
+    NavigationStack {
+      VStack {
+        List {
+          ForEach(
+            store.scope(state: \.voiceMemos, action: \.voiceMemos)
+          ) { store in
+            VoiceMemoView(store: store)
+          }
+          .onDelete { store.send(.onDelete($0)) }
+        }
+
+        Group {
+          if let store = store.scope(
+            state: \.recordingMemo,
+            action: \.recordingMemo.presented
+          ) {
+            RecordingMemoView(store: store)
+          } else {
+            RecordButton(
+              permission: store.audioRecorderPermission
+            ) {
+              store.send(.recordButtonTapped, animation: .spring())
+            } settingsAction: {
+              store.send(.openSettingsButtonTapped)
+            }
+          }
+        }
+        .padding()
+        .frame(maxWidth: .infinity)
+        .background(Color.init(white: 0.95))
+      }
+      .alert($store.scope(state: \.alert, action: \.alert))
+      .navigationTitle("Voice memos")
+    }
+  }
+}
+
+struct VoiceMemoView: View {
+  @Bindable var store: StoreOf<VoiceMemo>
+
+  var body: some View {
+    let currentTime =
+      store.mode.playing.map { $0 * store.duration } ?? store.duration
+    HStack {
+      TextField(
+        "Untitled, \(store.date.formatted(date: .numeric, time: .shortened))",
+        text: $store.title.sending(\.titleTextFieldChanged)
+      )
+
+      Spacer()
+
+      dateComponentsFormatter.string(from: currentTime).map {
+        Text($0)
+          .font(.footnote.monospacedDigit())
+          .foregroundColor(Color(.systemGray))
+      }
+
+      Button {
+        store.send(.playButtonTapped)
+      } label: {
+        Image(
+          systemName: store.mode.is(\.playing)
+            ? "stop.circle"
+            : "play.circle"
+        )
+        .font(.system(size: 22))
+      }
+    }
+    .buttonStyle(.borderless)
+  }
+}
+```
+
+</CodeGroup>
+
+## Key Concepts
+
+### Permission Handling
+
+Model permission state explicitly:
+
+```swift
+var audioRecorderPermission = RecorderPermission.undetermined
+
+enum RecorderPermission {
+  case allowed
+  case denied
+  case undetermined
+}
+```
+
+Request permission when needed:
+
+```swift
+case .recordButtonTapped:
+  switch state.audioRecorderPermission {
+  case .undetermined:
+    return .run { send in
+      await send(
+        .recordPermissionResponse(
+          self.requestRecordPermission()
+        )
+      )
+    }
+  case .denied:
+    state.alert = AlertState {
+      TextState("Permission is required to record voice memos.")
+    }
+    return .none
+  case .allowed:
+    state.recordingMemo = newRecordingMemo
+    return .none
+  }
+```
+
+### State Machines with Enums
+
+Model playback state as an enum:
+
+```swift
+enum Mode: Equatable {
+  case notPlaying
+  case playing(progress: Double)
+}
+```
+
+This ensures:
+- Progress only exists when playing
+- Invalid states are impossible
+- Transitions are explicit
+
+### Audio Playback
+
+Manage playback with coordinated effects:
+
+```swift
+case .playButtonTapped:
+  switch state.mode {
+  case .notPlaying:
+    state.mode = .playing(progress: 0)
+
+    return .run { [url = state.url] send in
+      await send(.delegate(.playbackStarted))
+
+      // Run audio playback and timer concurrently
+      async let playAudio: Void = send(
+        .audioPlayerClient(
+          Result { try await self.audioPlayer.play(url: url) }
+        )
+      )
+
+      var start: TimeInterval = 0
+      for await _ in self.clock.timer(interval: .milliseconds(500)) {
+        start += 0.5
+        await send(.timerUpdated(start))
+      }
+
+      await playAudio
+    }
+    .cancellable(id: CancelID.play, cancelInFlight: true)
+
+  case .playing:
+    state.mode = .notPlaying
+    return .cancel(id: CancelID.play)
+  }
+```
+
+### Custom Dependencies
+
+Define audio client interfaces:
+
+```swift
+@DependencyClient
+struct AudioPlayerClient {
+  var play: @Sendable (URL) async throws -> Bool
+}
+
+@DependencyClient
+struct AudioRecorderClient {
+  var requestRecordPermission: @Sendable () async -> Bool
+  var startRecording: @Sendable (URL) async throws -> Bool
+  var stopRecording: @Sendable () async -> Void
+}
+
+extension DependencyValues {
+  var audioPlayer: AudioPlayerClient {
+    get { self[AudioPlayerClient.self] }
+    set { self[AudioPlayerClient.self] = newValue }
+  }
+
+  var audioRecorder: AudioRecorderClient {
+    get { self[AudioRecorderClient.self] }
+    set { self[AudioRecorderClient.self] = newValue }
+  }
+}
+```
+
+### Coordinating Multiple Memos
+
+Stop other memos when one starts playing:
+
+```swift
+case .voiceMemos(.element(id: let id, action: .delegate(.playbackStarted))):
+  // Stop all other memos
+  for memoID in state.voiceMemos.ids where memoID != id {
+    state.voiceMemos[id: memoID]?.mode = .notPlaying
+  }
+  return .none
+```
+
+### Presentation Logic
+
+Use `@Presents` for modals and alerts:
+
+```swift
+@Presents var alert: AlertState<Action.Alert>?
+@Presents var recordingMemo: RecordingMemo.State?
+```
+
+Integrate with reducers:
+
+```swift
+.ifLet(\.$alert, action: \.alert)
+.ifLet(\.$recordingMemo, action: \.recordingMemo) {
+  RecordingMemo()
+}
+```
+
+## Testing
+
+```swift
+@Test
+func testRecordPermissionDenied() async {
+  let store = TestStore(initialState: VoiceMemos.State()) {
+    VoiceMemos()
+  } withDependencies: {
+    $0.audioRecorder.requestRecordPermission = { false }
+  }
+
+  await store.send(.recordButtonTapped)
+
+  await store.receive(\.recordPermissionResponse) {
+    $0.audioRecorderPermission = .denied
+    $0.alert = AlertState {
+      TextState("Permission is required to record voice memos.")
+    }
+  }
+}
+
+@Test
+func testRecordAndPlayback() async {
+  let clock = TestClock()
+
+  let store = TestStore(initialState: VoiceMemos.State()) {
+    VoiceMemos()
+  } withDependencies: {
+    $0.audioRecorder.requestRecordPermission = { true }
+    $0.continuousClock = clock
+    $0.date.now = Date(timeIntervalSince1970: 1234567890)
+    $0.uuid = .incrementing
+  }
+
+  await store.send(.recordButtonTapped)
+  await store.receive(\.recordPermissionResponse) {
+    $0.audioRecorderPermission = .allowed
+    $0.recordingMemo = RecordingMemo.State(
+      date: Date(timeIntervalSince1970: 1234567890),
+      url: URL(fileURLWithPath: "/tmp/00000000-0000-0000-0000-000000000000.m4a")
+    )
+  }
+
+  // Test recording flow...
+}
+```
+
+## Source Code
+
+View the complete example in the TCA repository:
+- [VoiceMemos.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/VoiceMemos/VoiceMemos/VoiceMemos.swift)
+- [VoiceMemo.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/VoiceMemos/VoiceMemos/VoiceMemo.swift)
+
+## Next Steps
+
+- Learn about [dependencies](/fundamentals/dependencies)
+- Explore [effects](/fundamentals/effects) for async operations
+- See [testing](/fundamentals/testing) for async code

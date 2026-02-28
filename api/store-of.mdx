@@ -1,0 +1,127 @@
+---
+title: StoreOf
+description: A convenience type alias for referring to a store of a given reducer's domain
+group: SwiftUI Integration
+---
+
+`StoreOf<R>` is a type alias that simplifies store type declarations by consolidating a reducer's state and action types into a single generic parameter.
+
+## Declaration
+
+```swift
+public typealias StoreOf<R: Reducer> = Store<R.State, R.Action>
+```
+
+## Overview
+
+Instead of specifying both state and action types as separate generics, `StoreOf` allows you to reference a store using only the reducer type. This reduces verbosity and improves readability throughout your SwiftUI views.
+
+### Before StoreOf
+
+```swift
+struct FeatureView: View {
+  let store: Store<Feature.State, Feature.Action>
+  
+  var body: some View {
+    // ...
+  }
+}
+```
+
+### With StoreOf
+
+```swift
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    // ...
+  }
+}
+```
+
+## Usage
+
+`StoreOf` is particularly useful in SwiftUI view declarations where you need to accept a store parameter:
+
+```swift
+@Reducer
+struct Counter {
+  @ObservableState
+  struct State: Equatable {
+    var count = 0
+  }
+  
+  enum Action {
+    case increment
+    case decrement
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .increment:
+        state.count += 1
+        return .none
+      case .decrement:
+        state.count -= 1
+        return .none
+      }
+    }
+  }
+}
+
+struct CounterView: View {
+  let store: StoreOf<Counter>
+  
+  var body: some View {
+    HStack {
+      Button("-") { store.send(.decrement) }
+      Text("\(store.count)")
+      Button("+") { store.send(.increment) }
+    }
+  }
+}
+```
+
+## Scoping with StoreOf
+
+`StoreOf` works seamlessly with store scoping operations:
+
+```swift
+@Reducer
+struct AppFeature {
+  @ObservableState
+  struct State {
+    var counter1 = Counter.State()
+    var counter2 = Counter.State()
+  }
+  
+  enum Action {
+    case counter1(Counter.Action)
+    case counter2(Counter.Action)
+  }
+  
+  // ...
+}
+
+struct AppView: View {
+  let store: StoreOf<AppFeature>
+  
+  var body: some View {
+    VStack {
+      CounterView(
+        store: store.scope(state: \.counter1, action: \.counter1)
+      )
+      CounterView(
+        store: store.scope(state: \.counter2, action: \.counter2)
+      )
+    }
+  }
+}
+```
+
+## See Also
+
+- `Store`: The underlying store type
+- `Reducer`: The protocol that defines feature logic

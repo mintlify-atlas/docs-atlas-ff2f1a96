@@ -1,0 +1,304 @@
+---
+title: TestStore
+description: A testable runtime for a reducer
+---
+
+A `TestStore` aids in writing expressive and exhaustive tests for features built in the Composable Architecture. It allows you to send a sequence of actions to the store, and each step of the way you must assert exactly how state changed, and how effect emissions were fed back into the system.
+
+## Class Definition
+
+```swift
+@MainActor
+public final class TestStore<State: Equatable, Action>
+```
+
+## Initialization
+
+<ParamField path="init(initialState:reducer:withDependencies:)" type="initializer">
+  Creates a test store with an initial state and a reducer powering its runtime.
+  
+  **Parameters:**
+  - `initialState`: The state the feature starts in
+  - `reducer`: The reducer that powers the runtime of the feature
+  - `prepareDependencies`: A closure that can be used to override dependencies that will be accessed during the test
+  - `fileID`: The fileID
+  - `filePath`: The filePath
+  - `line`: The line
+  - `column`: The column
+  
+  ```swift
+  public init(
+    initialState: @autoclosure () -> State,
+    reducer: () -> some Reducer<State, Action>,
+    withDependencies prepareDependencies: (inout DependencyValues) -> Void = { _ in },
+    fileID: StaticString = #fileID,
+    file filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+  )
+  ```
+</ParamField>
+
+## Properties
+
+<ParamField path="state" type="State">
+  The current state of the test store.
+  
+  When read from a trailing closure assertion in `send` or `receive`, it will equal the `inout` state passed to the closure.
+</ParamField>
+
+<ParamField path="dependencies" type="DependencyValues">
+  The current dependencies of the test store.
+  
+  The dependencies define the execution context that your feature runs in. They can be modified throughout the test store's lifecycle in order to influence how your feature produces effects.
+</ParamField>
+
+<ParamField path="exhaustivity" type="Exhaustivity">
+  The current exhaustivity level of the test store.
+  
+  Defaults to `.on`. Can be set to `.off` or `.off(showSkippedAssertions: true)` for non-exhaustive testing.
+</ParamField>
+
+<ParamField path="timeout" type="Duration">
+  The default timeout used in all methods that take an optional timeout.
+  
+  This is the default timeout used in methods like `receive` and `finish`.
+</ParamField>
+
+## Methods
+
+### Sending Actions
+
+<ParamField path="send(_:assert:)" type="func">
+  Sends an action to the store and asserts when state changes.
+  
+  To assert on how state changes you can provide a trailing closure, and that closure is handed a mutable variable that represents the feature's state _before_ the action was sent. You need to mutate that variable so that it is equal to the feature's state _after_ the action is sent.
+  
+  **Parameters:**
+  - `action`: An action
+  - `updateStateToExpectedResult`: A closure that asserts state changed by sending the action to the store. The mutable state sent to this closure must be modified to match the state of the store after processing the given action. Do not provide a closure if no change is expected.
+  
+  **Returns:** A `TestStoreTask` that represents the lifecycle of the effect executed when sending the action.
+  
+  ```swift
+  @discardableResult
+  public func send(
+    _ action: Action,
+    assert updateStateToExpectedResult: ((_ state: inout State) throws -> Void)? = nil
+  ) async -> TestStoreTask
+  ```
+</ParamField>
+
+### Receiving Actions
+
+<ParamField path="receive(_:timeout:assert:)" type="func" requires="Action: Equatable">
+  Asserts an action was received from an effect and asserts how the state changes.
+  
+  When an effect is executed in your feature and sends an action back into the system, you can use this method to assert that fact, and further assert how state changes after the effect action is received.
+  
+  **Parameters:**
+  - `expectedAction`: An action expected from an effect
+  - `duration`: The amount of time to wait for the expected action
+  - `updateStateToExpectedResult`: A closure that asserts state changed by sending the action to the store
+  
+  ```swift
+  public func receive(
+    _ expectedAction: Action,
+    timeout duration: Duration? = nil,
+    assert updateStateToExpectedResult: ((_ state: inout State) throws -> Void)? = nil
+  ) async where Action: Equatable
+  ```
+</ParamField>
+
+### Finishing Tests
+
+<ParamField path="finish(timeout:)" type="func">
+  Suspends until all in-flight effects have finished, or until it times out.
+  
+  Can be used to assert that all effects have finished.
+  
+  **Parameters:**
+  - `duration`: The amount of time to wait before asserting
+  
+  ```swift
+  public func finish(
+    timeout duration: Duration? = nil
+  ) async
+  ```
+</ParamField>
+
+### State Assertions
+
+<ParamField path="assert(_:)" type="func">
+  Assert against the current state of the store.
+  
+  The trailing closure provided is given a mutable argument that represents the current state, and you can provide any mutations you want to the state. If your mutations cause the argument to differ from the current state of the test store, a test failure will be triggered.
+  
+  This tool is most useful in non-exhaustive test stores.
+  
+  **Parameters:**
+  - `updateStateToExpectedResult`: A closure that asserts against the current state of the test store
+  
+  ```swift
+  public func assert(
+    _ updateStateToExpectedResult: @escaping (_ state: inout State) throws -> Void
+  )
+  ```
+</ParamField>
+
+### Dependency Overrides
+
+<ParamField path="withDependencies(_:operation:)" type="func">
+  Overrides the store's dependencies for a given operation.
+  
+  **Parameters:**
+  - `updateValuesForOperation`: A closure for updating the store's dependency values for the duration of the operation
+  - `operation`: The operation
+  
+  ```swift
+  public func withDependencies<R>(
+    _ updateValuesForOperation: (_ dependencies: inout DependencyValues) throws -> Void,
+    operation: () throws -> R
+  ) rethrows -> R
+  ```
+</ParamField>
+
+<ParamField path="withExhaustivity(_:operation:)" type="func">
+  Overrides the store's exhaustivity for a given operation.
+  
+  **Parameters:**
+  - `exhaustivity`: The exhaustivity
+  - `operation`: The operation
+  
+  ```swift
+  public func withExhaustivity<R>(
+    _ exhaustivity: Exhaustivity,
+    operation: () throws -> R
+  ) rethrows -> R
+  ```
+</ParamField>
+
+## Usage Examples
+
+### Basic Test
+
+```swift
+@MainActor
+struct CounterTests {
+  @Test
+  func basics() async {
+    let store = TestStore(
+      initialState: Counter.State(count: 0)
+    ) {
+      Counter()
+    }
+    
+    await store.send(.incrementButtonTapped) {
+      $0.count = 1
+    }
+    
+    await store.send(.decrementButtonTapped) {
+      $0.count = 0
+    }
+  }
+}
+```
+
+### Testing Effects
+
+```swift
+@Test
+func testSearch() async {
+  let clock = TestClock()
+  
+  let store = TestStore(initialState: Search.State()) {
+    Search()
+  } withDependencies: {
+    $0.continuousClock = clock
+    $0.apiClient.search = { _ in
+      ["Composable Architecture"]
+    }
+  }
+  
+  // Change the query
+  await store.send(.searchFieldChanged("c")) {
+    $0.query = "c"
+  }
+  
+  // Advance the clock by enough to get past the debounce
+  await clock.advance(by: .seconds(0.5))
+  
+  // Assert that the expected response is received
+  await store.receive(\.searchResponse.success) {
+    $0.results = ["Composable Architecture"]
+  }
+}
+```
+
+### Non-Exhaustive Testing
+
+```swift
+let store = TestStore(initialState: App.State()) {
+  App()
+}
+store.exhaustivity = .off
+
+await store.send(\.login.submitButtonTapped)
+await store.receive(\.login.delegate.didLogin) {
+  $0.selectedTab = .activity
+}
+```
+
+### Overriding Dependencies Mid-Test
+
+```swift
+store.dependencies.apiClient = .failing
+
+await store.send(.buttonTapped) { /* ... */ }
+await store.receive(\.searchResponse.failure) { /* ... */ }
+
+store.dependencies.apiClient = .mock
+
+await store.send(.buttonTapped) { /* ... */ }
+await store.receive(\.searchResponse.success) { /* ... */ }
+```
+
+## Exhaustive Testing
+
+By default, `TestStore` requires you to exhaustively prove how your feature evolves:
+
+- After each action is sent you must describe precisely how the state changed
+- If an effect sends an action back into the system, you **must** explicitly assert that you expect to receive that action
+- All effects must complete by the time the test case has finished running
+
+## Non-Exhaustive Testing
+
+Set `exhaustivity` to `.off` to allow:
+
+- Asserting on a subset of state changes
+- Sending actions even when there are unasserted received actions
+- Finishing tests with in-flight effects
+
+Use `.off(showSkippedAssertions: true)` to see what assertions are being skipped without causing test failures.
+
+## Type Aliases
+
+<ParamField path="TestStoreOf" type="typealias">
+  A convenience type alias for referring to a test store of a given reducer's domain.
+  
+  ```swift
+  public typealias TestStoreOf<R: Reducer> = TestStore<R.State, R.Action> where R.State: Equatable
+  ```
+  
+  Instead of specifying two generics:
+  
+  ```swift
+  let testStore: TestStore<Feature.State, Feature.Action>
+  ```
+  
+  You can specify a single generic:
+  
+  ```swift
+  let testStore: TestStoreOf<Feature>
+  ```
+</ParamField>

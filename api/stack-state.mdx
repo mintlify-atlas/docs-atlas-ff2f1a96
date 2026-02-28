@@ -1,0 +1,307 @@
+---
+title: "StackState & StackAction"
+description: "Types for managing navigation stack state and actions in The Composable Architecture."
+---
+
+## Overview
+
+`StackState` and `StackAction` are the core types for implementing stack-based navigation in TCA. `StackState` is a collection that holds the state of all screens in a navigation stack, while `StackAction` represents actions that can be sent to or from stack elements.
+
+## StackState
+
+### Declaration
+
+```swift
+public struct StackState<Element>
+```
+
+A list of data representing the content of a navigation stack.
+
+### Usage
+
+Use `StackState` to model navigation stack state in your feature:
+
+```swift
+@Reducer
+struct AppFeature {
+  @Reducer
+  enum Path {
+    case detail(DetailFeature)
+    case settings(SettingsFeature)
+  }
+  
+  @ObservableState
+  struct State {
+    var path = StackState<Path.State>()
+  }
+  
+  enum Action {
+    case path(StackActionOf<Path>)
+  }
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      // Core logic
+    }
+    .forEach(\.path, action: \.path)
+  }
+}
+```
+
+### Properties
+
+#### ids
+
+```swift
+public var ids: OrderedSet<StackElementID>
+```
+
+An ordered set of identifiers, one for each stack element. You can use this to iterate over elements with their IDs:
+
+```swift
+for (id, element) in zip(state.path.ids, state.path) {
+  if element.isDeleted {
+    state.path.pop(from: id)
+    break
+  }
+}
+```
+
+### Subscripts
+
+#### Access by ID
+
+```swift
+public subscript(id id: StackElementID) -> Element?
+```
+
+Access the value associated with a given ID:
+
+```swift
+if var element = state.path[id: elementID] {
+  // Modify element
+  state.path[id: elementID] = element
+}
+```
+
+#### Access by Case
+
+```swift
+public subscript<Case>(
+  id id: StackElementID,
+  case path: CaseKeyPath<Element, Case>
+) -> Case?
+```
+
+Access a specific case of an enum element:
+
+```swift
+state.path[id: 0, case: \.edit]?.alert = AlertState {
+  Text("Delete?")
+}
+```
+
+### Methods
+
+#### pop(from:)
+
+```swift
+public mutating func pop(from id: StackElementID)
+```
+
+Pops the element corresponding to `id` from the stack, and all elements after it:
+
+```swift
+state.path.pop(from: elementID)
+```
+
+#### pop(to:)
+
+```swift
+public mutating func pop(to id: StackElementID)
+```
+
+Pops all elements that come after the element corresponding to `id`:
+
+```swift
+state.path.pop(to: elementID)
+```
+
+### Collection Operations
+
+`StackState` conforms to `RandomAccessCollection` and `RangeReplaceableCollection`, so you can use standard collection operations:
+
+```swift
+// Append elements
+state.path.append(.detail(DetailFeature.State()))
+
+// Remove all
+state.path.removeAll()
+
+// Count elements
+let count = state.path.count
+
+// Iterate
+for element in state.path {
+  // Process element
+}
+```
+
+## StackAction
+
+### Declaration
+
+```swift
+public enum StackAction<State, Action>
+```
+
+A wrapper type for actions that can be presented in a navigation stack.
+
+### Cases
+
+#### element
+
+```swift
+case element(id: StackElementID, action: Action)
+```
+
+An action sent to the associated stack element at a given identifier:
+
+```swift
+case .path(.element(id: elementID, action: .incrementButtonTapped)):
+  // Child handled the action
+  return .none
+```
+
+#### popFrom
+
+```swift
+case popFrom(id: StackElementID)
+```
+
+An action sent to dismiss the stack element at the given identifier:
+
+```swift
+case .path(.popFrom(id: elementID)):
+  // Element was popped
+  return .none
+```
+
+#### push
+
+```swift
+case push(id: StackElementID, state: State)
+```
+
+An action sent to present the given state at a given identifier. This is typically sent automatically from the view via `NavigationLink(state:)`.
+
+### Usage Example
+
+```swift
+@Reducer
+struct NavigationDemo {
+  @Reducer
+  enum Path {
+    case screenA(ScreenA)
+    case screenB(ScreenB)
+  }
+  
+  @ObservableState
+  struct State {
+    var path = StackState<Path.State>()
+  }
+  
+  enum Action {
+    case path(StackActionOf<Path>)
+    case popToRoot
+  }
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      switch action {
+      case .path(.element(id: _, action: .screenA(.nextButtonTapped))):
+        state.path.append(.screenB(ScreenB.State()))
+        return .none
+        
+      case .popToRoot:
+        state.path.removeAll()
+        return .none
+        
+      case .path:
+        return .none
+      }
+    }
+    .forEach(\.path, action: \.path)
+  }
+}
+```
+
+## StackElementID
+
+### Declaration
+
+```swift
+public struct StackElementID: Hashable, Sendable
+```
+
+An opaque identifier for stack elements. IDs are automatically generated when elements are added to the stack.
+
+### Testing with IDs
+
+In tests, you can use integer literals to reference stack element IDs:
+
+```swift
+@Test
+func basics() {
+  var path = StackState<Int>()
+  path.append(42)
+  XCTAssertEqual(path[id: 0], 42)
+  path.append(1729)
+  XCTAssertEqual(path[id: 1], 1729)
+  
+  path.removeAll()
+  path.append(-1)
+  XCTAssertEqual(path[id: 2], -1)  // Generational ID
+}
+```
+
+Note that IDs are generational in tests - they keep counting up even after elements are removed.
+
+## StackActionOf
+
+### Type Alias
+
+```swift
+public typealias StackActionOf<R: Reducer> = StackAction<R.State, R.Action>
+```
+
+A convenience type alias for referring to a stack action of a given reducer's domain:
+
+```swift
+// Instead of:
+case path(StackAction<Path.State, Path.Action>)
+
+// You can write:
+case path(StackActionOf<Path>)
+```
+
+## Key Points
+
+- **Type-Safe Navigation**: `StackState` enforces type safety for all navigation operations
+- **Automatic Cleanup**: Effects are automatically cancelled when elements are popped from the stack
+- **Deterministic IDs**: Stack element IDs are predictable in tests for easier testing
+- **Parent Intercepts**: The parent reducer can intercept and respond to child actions before they're processed
+- **Deep Linking**: You can programmatically build deep navigation stacks by appending multiple elements
+
+## Related Types
+
+- `NavigationLink(state:)` - SwiftUI view for triggering navigation
+- `forEach` - Reducer operator for integrating stack state
+- `@Presents` - Macro for tree-based navigation
+- `PresentationState` - Type for optional navigation state
+
+## See Also
+
+- [Stack-Based Navigation](/concepts/navigation/stack-based)
+- [forEach Operator](/api/foreach-operator)
+- [Testing Navigation](/guides/testing-navigation)

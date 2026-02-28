@@ -1,122 +1,154 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "The Composable Architecture",
+  "theme": "palm",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7C3AED",
+    "light": "#A78BFA",
+    "dark": "#6D28D9"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/pointfreeco/swift-composable-architecture"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/pointfreeco/swift-composable-architecture"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "installation",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/state-management",
+              "concepts/reducers",
+              "concepts/effects",
+              "concepts/store",
+              "concepts/composition"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Guides",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "guides/testing",
+              "guides/dependencies",
+              "guides/navigation",
+              "guides/sharing-state",
+              "guides/bindings",
+              "guides/performance",
+              "guides/concurrency"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Navigation",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "navigation/overview",
+              "navigation/tree-based",
+              "navigation/stack-based"
+            ]
+          },
+          {
+            "group": "Integration",
+            "pages": [
+              "integration/swiftui",
+              "integration/uikit",
+              "integration/observation"
+            ]
+          },
+          {
+            "group": "Migration Guides",
+            "pages": [
+              "migration/overview",
+              "migration/v1-19",
+              "migration/v1-18",
+              "migration/v1-17"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Core Types",
             "pages": [
-              "api-reference/introduction"
+              "api/reducer",
+              "api/store",
+              "api/effect",
+              "api/test-store"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Macros",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/reducer-macro",
+              "api/observable-state",
+              "api/dependency"
+            ]
+          },
+          {
+            "group": "Reducer Builders",
+            "pages": [
+              "api/reduce",
+              "api/scope",
+              "api/foreach",
+              "api/iflet"
+            ]
+          },
+          {
+            "group": "Navigation Types",
+            "pages": [
+              "api/presents",
+              "api/navigation-link-state",
+              "api/stack-state"
+            ]
+          },
+          {
+            "group": "SwiftUI Integration",
+            "pages": [
+              "api/store-of",
+              "api/with-view-store",
+              "api/switch-store"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Case Studies",
+            "pages": [
+              "examples/counter",
+              "examples/two-counters",
+              "examples/todos",
+              "examples/tic-tac-toe"
+            ]
+          },
+          {
+            "group": "Real-World Apps",
+            "pages": [
+              "examples/syncups",
+              "examples/voice-memos",
+              "examples/search"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

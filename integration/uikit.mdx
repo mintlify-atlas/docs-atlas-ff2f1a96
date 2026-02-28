@@ -1,0 +1,429 @@
+---
+title: UIKit Integration
+description: Integrate The Composable Architecture with UIKit view controllers and components
+---
+
+While TCA was designed with SwiftUI in mind, it provides comprehensive tools for UIKit applications through the UIKitNavigation framework.
+
+## Basic UIKit Integration
+
+### Using @UIBindable
+
+The `@UIBindable` property wrapper enables observation and binding creation in UIKit view controllers:
+
+```swift
+import ComposableArchitecture
+import UIKit
+
+class FeatureViewController: UIViewController {
+  @UIBindable var store: StoreOf<Feature>
+  
+  init(store: StoreOf<Feature>) {
+    self.store = store
+    super.init(nibName: nil, bundle: nil)
+  }
+  
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+  
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    setupUI()
+  }
+}
+```
+
+### Using @ViewAction
+
+The `@ViewAction` macro simplifies sending actions from view controllers:
+
+```swift
+@ViewAction(for: Feature.self)
+class FeatureViewController: UIViewController {
+  @UIBindable var store: StoreOf<Feature>
+  
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    
+    let button = UIButton(
+      type: .system,
+      primaryAction: UIAction { [weak self] _ in
+        self?.send(.buttonTapped)
+      }
+    )
+  }
+}
+```
+
+Source: [LoginViewController.swift:6-12](/home/daytona/workspace/source/Examples/TicTacToe/tic-tac-toe/Sources/LoginUIKit/LoginViewController.swift#L6-L12)
+
+## Observing State Changes
+
+Use the `observe` method to react to state changes:
+
+```swift
+override func viewDidLoad() {
+  super.viewDidLoad()
+  
+  let titleLabel = UILabel()
+  let activityIndicator = UIActivityIndicatorView()
+  
+  observe { [weak self, weak titleLabel, weak activityIndicator] in
+    guard let self else { return }
+    titleLabel?.text = store.title
+    titleLabel?.isHidden = store.isTitleHidden
+    
+    if store.isLoading {
+      activityIndicator?.startAnimating()
+    } else {
+      activityIndicator?.stopAnimating()
+    }
+  }
+}
+```
+
+Source: [LoginViewController.swift:86-92](/home/daytona/workspace/source/Examples/TicTacToe/tic-tac-toe/Sources/LoginUIKit/LoginViewController.swift#L86-L92)
+
+<Warning>
+  Always use `[weak self]` and `[weak view]` captures in observe closures to prevent retain cycles.
+</Warning>
+
+## Two-Way Bindings
+
+Create UIKit bindings using the `$store` syntax:
+
+```swift
+let emailTextField = UITextField(text: $store.email)
+emailTextField.placeholder = "email@address.com"
+emailTextField.borderStyle = .roundedRect
+
+let passwordTextField = UITextField(text: $store.password)
+passwordTextField.placeholder = "Password"
+passwordTextField.isSecureTextEntry = true
+```
+
+Source: [LoginViewController.swift:42-50](/home/daytona/workspace/source/Examples/TicTacToe/tic-tac-toe/Sources/LoginUIKit/LoginViewController.swift#L42-L50)
+
+## Navigation
+
+### Navigation Destinations
+
+Use `navigationDestination(item:)` to handle push navigation:
+
+```swift
+override func viewDidLoad() {
+  super.viewDidLoad()
+  
+  navigationDestination(
+    item: $store.scope(state: \.destination, action: \.destination)
+  ) { store in
+    DestinationViewController(store: store)
+  }
+}
+```
+
+Source: [LoginViewController.swift:98-100](/home/daytona/workspace/source/Examples/TicTacToe/tic-tac-toe/Sources/LoginUIKit/LoginViewController.swift#L98-L100)
+
+### Stack-Based Navigation
+
+For more complex navigation, use `NavigationStackController`:
+
+```swift
+import UIKitNavigation
+
+let navigationController = NavigationStackController(
+  path: $store.scope(state: \.path, action: \.path),
+  root: { RootViewController(store: store) },
+  destination: { store in
+    switch store.case {
+    case .detail:
+      DetailViewController(store: store)
+    case .settings:
+      SettingsViewController(store: store)
+    }
+  }
+)
+```
+
+Source: [NavigationStackControllerUIKit.swift:4-78](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/UIKit/NavigationStackControllerUIKit.swift#L4-L78)
+
+### Programmatic Navigation
+
+Push to the stack programmatically using `UIPushAction`:
+
+```swift
+@available(iOS 17, *)
+@MainActor
+func pushToDetail() {
+  let pushAction = UIPushAction()
+  pushAction(state: DetailFeature.State())
+}
+```
+
+Source: [NavigationStackControllerUIKit.swift:80-110](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/UIKit/NavigationStackControllerUIKit.swift#L80-L110)
+
+## Alerts and Dialogs
+
+### Presenting Alerts
+
+Use `UIAlertController` with store scoping:
+
+```swift
+override func viewDidLoad() {
+  super.viewDidLoad()
+  
+  present(item: $store.scope(state: \.alert, action: \.alert)) { store in
+    UIAlertController(store: store)
+  }
+}
+```
+
+Source: [LoginViewController.swift:94-96](/home/daytona/workspace/source/Examples/TicTacToe/tic-tac-toe/Sources/LoginUIKit/LoginViewController.swift#L94-L96)
+
+### Alert State Integration
+
+Define alerts in your feature's state:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State {
+    @Presents var alert: AlertState<Action.Alert>?
+  }
+  
+  enum Action {
+    case alert(PresentationAction<Alert>)
+    
+    enum Alert {
+      case confirmDelete
+      case cancel
+    }
+  }
+}
+```
+
+The `UIAlertController` initializer automatically handles the alert presentation:
+
+```swift
+public convenience init<Action>(
+  store: Store<AlertState<Action>, Action>
+) {
+  // Automatically presents alert from store state
+}
+```
+
+Source: [AlertStateUIKit.swift:7-30](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/UIKit/AlertStateUIKit.swift#L7-L30)
+
+### Confirmation Dialogs
+
+Similar to alerts, present confirmation dialogs:
+
+```swift
+present(item: $store.scope(state: \.dialog, action: \.dialog)) { store in
+  UIAlertController(store: store)
+}
+```
+
+Source: [AlertStateUIKit.swift:32-54](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/UIKit/AlertStateUIKit.swift#L32-L54)
+
+## Modal Presentation
+
+Present view controllers modally using the `present(item:)` method:
+
+```swift
+override func viewDidLoad() {
+  super.viewDidLoad()
+  
+  present(
+    item: $store.scope(state: \.sheet, action: \.sheet),
+    modalPresentationStyle: .formSheet
+  ) { store in
+    SheetViewController(store: store)
+  }
+}
+```
+
+## Custom Bindings
+
+Create custom bindings for UIKit controls:
+
+```swift
+let slider = UISlider()
+observe { [weak self, weak slider] in
+  guard let self else { return }
+  slider?.value = Float(store.volume)
+}
+
+slider.addAction(
+  UIAction { [weak self] action in
+    if let slider = action.sender as? UISlider {
+      self?.send(.volumeChanged(Double(slider.value)))
+    }
+  },
+  for: .valueChanged
+)
+```
+
+## Best Practices
+
+### Memory Management
+
+Always use weak references in closures:
+
+```swift
+// Good: Prevents retain cycles
+observe { [weak self, weak label] in
+  guard let self else { return }
+  label?.text = store.text
+}
+
+// Bad: Creates retain cycle
+observe {
+  self.label.text = self.store.text
+}
+```
+
+### View Lifecycle
+
+Set up observations in `viewDidLoad()`:
+
+```swift
+override func viewDidLoad() {
+  super.viewDidLoad()
+  setupUI()
+  setupObservations()  // Observe state here
+}
+
+private func setupObservations() {
+  observe { [weak self] in
+    // Update UI from store
+  }
+}
+```
+
+### Combine @UIBindable with @ViewAction
+
+Use both macros together for the best experience:
+
+```swift
+@ViewAction(for: Feature.self)
+class FeatureViewController: UIViewController {
+  @UIBindable var store: StoreOf<Feature>
+  
+  // @ViewAction provides the send() method
+  // @UIBindable provides the $store binding
+}
+```
+
+### Platform Availability
+
+Some UIKit integration features require specific iOS versions:
+
+```swift
+#if canImport(UIKit) && !os(watchOS)
+  // UIKit code here
+#endif
+
+@available(iOS 17, macOS 14, tvOS 17, *)
+func useModernFeature() {
+  // iOS 17+ features
+}
+```
+
+Source: [NavigationStackControllerUIKit.swift:1-3](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/UIKit/NavigationStackControllerUIKit.swift#L1-L3)
+
+## Complete Example
+
+Here's a complete UIKit view controller example:
+
+```swift
+import ComposableArchitecture
+import UIKit
+
+@ViewAction(for: Login.self)
+class LoginViewController: UIViewController {
+  @UIBindable var store: StoreOf<Login>
+  
+  init(store: StoreOf<Login>) {
+    self.store = store
+    super.init(nibName: nil, bundle: nil)
+  }
+  
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+  
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    
+    navigationItem.title = "Login"
+    view.backgroundColor = .systemBackground
+    
+    let emailTextField = UITextField(text: $store.email)
+    emailTextField.placeholder = "email@address.com"
+    emailTextField.borderStyle = .roundedRect
+    
+    let passwordTextField = UITextField(text: $store.password)
+    passwordTextField.placeholder = "Password"
+    passwordTextField.isSecureTextEntry = true
+    
+    let loginButton = UIButton(
+      type: .system,
+      primaryAction: UIAction { [weak self] _ in
+        self?.send(.loginButtonTapped)
+      }
+    )
+    loginButton.setTitle("Login", for: .normal)
+    
+    let activityIndicator = UIActivityIndicatorView()
+    
+    // Layout code...
+    
+    observe { [weak self, weak activityIndicator, weak loginButton] in
+      guard let self else { return }
+      loginButton?.isEnabled = !store.isLoading
+      
+      if store.isLoading {
+        activityIndicator?.startAnimating()
+      } else {
+        activityIndicator?.stopAnimating()
+      }
+    }
+    
+    present(item: $store.scope(state: \.alert, action: \.alert)) { store in
+      UIAlertController(store: store)
+    }
+    
+    navigationDestination(
+      item: $store.scope(state: \.destination, action: \.destination)
+    ) { store in
+      DestinationViewController(store: store)
+    }
+  }
+}
+```
+
+## Migration from ViewStore
+
+If you're migrating from the legacy `ViewStore` pattern:
+
+```swift
+// Old pattern (deprecated)
+let viewStore = ViewStore(store, observe: { $0 })
+viewStore.send(.action)
+let value = viewStore.state.value
+
+// New pattern
+@UIBindable var store: StoreOf<Feature>
+store.send(.action)  // Or send(.action) with @ViewAction
+let value = store.value
+```
+
+## Related Resources
+
+- [SwiftUI Integration](swiftui)
+- [Observation Framework](observation)
+- [Navigation Patterns](/guides/navigation)
+- [UIKitNavigation Library](https://github.com/pointfreeco/swift-navigation)

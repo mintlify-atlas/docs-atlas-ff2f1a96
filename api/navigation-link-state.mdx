@@ -1,0 +1,168 @@
+---
+title: "NavigationLink(state:)"
+description: "SwiftUI NavigationLink integration for pushing state onto a navigation stack."
+---
+
+## Overview
+
+`NavigationLink(state:)` is a SwiftUI view initializer that integrates with The Composable Architecture's stack-based navigation. It allows you to create navigation links that push new state onto a `StackState` collection when tapped.
+
+This is the primary way to navigate to new screens in stack-based navigation with TCA.
+
+## Usage
+
+### Basic Navigation
+
+Create a navigation link by providing the state to push onto the stack:
+
+```swift
+NavigationLink(
+  "Go to Detail",
+  state: Path.State.detail(DetailFeature.State())
+)
+```
+
+### With NavigationStack
+
+Use with `NavigationStack` and a binding to the store's path:
+
+```swift
+struct RootView: View {
+  @Bindable var store: StoreOf<RootFeature>
+  
+  var body: some View {
+    NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
+      Form {
+        NavigationLink(
+          "Go to Screen A",
+          state: Path.State.screenA(ScreenA.State())
+        )
+        NavigationLink(
+          "Go to Screen B",
+          state: Path.State.screenB(ScreenB.State())
+        )
+      }
+      .navigationTitle("Root")
+    } destination: { store in
+      switch store.case {
+      case .screenA(let store):
+        ScreenAView(store: store)
+      case .screenB(let store):
+        ScreenBView(store: store)
+      }
+    }
+  }
+}
+```
+
+### Complete Example
+
+```swift
+@Reducer
+struct NavigationDemo {
+  @Reducer
+  enum Path {
+    case screenA(ScreenA)
+    case screenB(ScreenB)
+    case screenC(ScreenC)
+  }
+  
+  @ObservableState
+  struct State {
+    var path = StackState<Path.State>()
+  }
+  
+  enum Action {
+    case path(StackActionOf<Path>)
+  }
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      // Parent logic
+    }
+    .forEach(\.path, action: \.path)
+  }
+}
+
+struct NavigationDemoView: View {
+  @Bindable var store: StoreOf<NavigationDemo>
+  
+  var body: some View {
+    NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
+      Form {
+        NavigationLink(
+          "Go to Screen A",
+          state: NavigationDemo.Path.State.screenA(ScreenA.State())
+        )
+        NavigationLink(
+          "Go to Screen B",
+          state: NavigationDemo.Path.State.screenB(ScreenB.State())
+        )
+      }
+      .navigationTitle("Root")
+    } destination: { store in
+      switch store.case {
+      case .screenA(let store):
+        ScreenAView(store: store)
+      case .screenB(let store):
+        ScreenBView(store: store)
+      }
+    }
+  }
+}
+```
+
+### Passing Data to Child
+
+You can pass data from the parent to the child state:
+
+```swift
+NavigationLink(
+  "Go to Detail",
+  state: Path.State.detail(
+    DetailFeature.State(count: store.count)
+  )
+)
+```
+
+### Custom Label
+
+Use the trailing closure syntax for custom labels:
+
+```swift
+NavigationLink(state: Path.State.detail(DetailFeature.State())) {
+  HStack {
+    Image(systemName: "star")
+    Text("Go to Detail")
+  }
+}
+```
+
+## How It Works
+
+1. When a `NavigationLink(state:)` is tapped, it sends a `StackAction.push` action to the store
+2. The action includes both an auto-generated ID and the state to push
+3. The `forEach` reducer operator intercepts this action and appends the state to the `StackState`
+4. SwiftUI's `NavigationStack` observes the change and pushes the new screen
+5. The destination closure renders the appropriate view based on the state
+
+## Key Points
+
+- **Type-Safe**: The state must match the type expected by the `StackState`
+- **Automatic IDs**: Stack element IDs are generated automatically
+- **Declarative**: Navigation is driven entirely by state changes
+- **Deep Links**: You can programmatically append multiple states to navigate deep into the stack
+
+## Related Types
+
+- `StackState` - Collection type for managing navigation stack state
+- `StackAction` - Action wrapper for stack-based navigation
+- `forEach` - Reducer operator for stack state
+- `StackElementID` - Identifier for stack elements
+
+## See Also
+
+- [Stack-Based Navigation](/concepts/navigation/stack-based)
+- [StackState](/api/stack-state)
+- [StackAction](/api/stack-action)
+- [forEach Operator](/api/foreach-operator)

@@ -1,0 +1,301 @@
+---
+title: Testing with TestStore
+description: Write comprehensive and exhaustive tests for your TCA features using TestStore
+icon: flask
+---
+
+The testability of features built in the Composable Architecture is the #1 priority of the library. It should be possible to test not only how state changes when actions are sent into the store, but also how effects are executed and feed data back into the system.
+
+## Testing state changes
+
+The library comes with a tool specifically designed to test features simply and concisely. It's called `TestStore`, and it is constructed similarly to `Store` by providing the initial state of the feature and the `Reducer` that runs the feature's logic:
+
+```swift
+import Testing
+
+@MainActor
+struct CounterTests {
+  @Test
+  func basics() async {
+    let store = TestStore(initialState: Feature.State(count: 0)) {
+      Feature()
+    }
+  }
+}
+```
+
+<Note>
+  Tests that use `TestStore` should be marked as `async` since most assertion helpers on `TestStore` can suspend. And while tests do not require the main actor, `TestStore` is main actor-isolated, and so we recommend annotating your tests and suites with `@MainActor`.
+</Note>
+
+### Asserting state changes
+
+Test stores have a `send` method, but it behaves differently from stores and view stores. You provide an action to send into the system, but then you must also provide a trailing closure to describe how the state of the feature changed after sending the action:
+
+```swift
+await store.send(.incrementButtonTapped) {
+  $0.count = 1
+}
+```
+
+This closure is handed a mutable variable that represents the state of the feature _before_ sending the action, and it is your job to make the appropriate mutations to it to get it into the shape it should be after sending the action.
+
+If your mutation is incorrect, you will get a test failure with a nicely formatted message:
+
+```swift
+await store.send(.incrementButtonTapped) {
+  $0.count = 999
+}
+```
+
+<Warning>
+  **Failure:** A state change does not match expectation:
+  
+  ```diff
+  - TestStoreTests.State(count: 999)
+  + TestStoreTests.State(count: 1)
+  ```
+  
+  (Expected: −, Actual: +)
+</Warning>
+
+### Testing multiple actions
+
+You can send multiple actions to emulate a script of user actions and assert each step of the way how the state evolved:
+
+```swift
+await store.send(.incrementButtonTapped) {
+  $0.count = 1
+}
+await store.send(.incrementButtonTapped) {
+  $0.count = 2
+}
+await store.send(.decrementButtonTapped) {
+  $0.count = 1
+}
+```
+
+<Tip>
+  In general, the less logic you have in the trailing closure of `send`, the stronger your assertion will be. It is best to use simple, hard-coded data for the mutation rather than performing calculations.
+</Tip>
+
+## Testing effects
+
+Testing state mutations is powerful, but is only half the story. The second responsibility of reducers, after mutating state from an action, is to return an `Effect` that encapsulates a unit of work that runs in the outside world and feeds data back into the system.
+
+### Basic effect testing
+
+Suppose we have a feature with a button such that when you tap it, it starts a timer that counts up until you reach 5, and then stops:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State: Equatable {
+    var count = 0
+  }
+  enum Action {
+    case startTimerButtonTapped
+    case timerTick
+  }
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .startTimerButtonTapped:
+        state.count = 0
+        return .run { send in
+          for _ in 1...5 {
+            try await Task.sleep(for: .seconds(1))
+            await send(.timerTick)
+          }
+        }
+
+      case .timerTick:
+        state.count += 1
+        return .none
+      }
+    }
+  }
+}
+```
+
+To test this, we can use the `receive` method which allows you to assert which action you expect to receive from an effect:
+
+```swift
+await store.send(.startTimerButtonTapped)
+
+await store.receive(\.timerTick, timeout: .seconds(2)) {
+  $0.count = 1
+}
+await store.receive(\.timerTick, timeout: .seconds(2)) {
+  $0.count = 2
+}
+// ... continue for all 5 ticks
+```
+
+<Note>
+  We are using key path syntax `\.timerTick` to specify the case of the action we expect to receive. This works because the `@Reducer` macro automatically applies the `@CasePathable` macro to the `Action` enum.
+</Note>
+
+### Controlling dependencies
+
+The example above requires waiting for real time to pass, which makes tests slow. To fix this, we can add a clock dependency:
+
+```swift
+import Clocks
+
+@Reducer
+struct Feature {
+  struct State { /* ... */ }
+  enum Action { /* ... */ }
+  @Dependency(\.continuousClock) var clock
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .startTimerButtonTapped:
+        state.count = 0
+        return .run { send in
+          for _ in 1...5 {
+            try await self.clock.sleep(for: .seconds(1))
+            await send(.timerTick)
+          }
+        }
+      // ...
+      }
+    }
+  }
+}
+```
+
+Now in tests, we can supply a controlled version using an immediate clock:
+
+```swift
+let store = TestStore(initialState: Feature.State(count: 0)) {
+  Feature()
+} withDependencies: {
+  $0.continuousClock = ImmediateClock()
+}
+
+await store.send(.startTimerButtonTapped)
+
+await store.receive(\.timerTick) {
+  $0.count = 1
+}
+// ... assertions now run immediately!
+```
+
+## Non-exhaustive testing
+
+Exhaustive testing is powerful but can be a nuisance for highly composed features. Sometimes you may want to test in a non-exhaustive style.
+
+<Steps>
+  <Step title="Turn off exhaustivity">
+    Set the `exhaustivity` property to `.off`:
+    
+    ```swift
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+    ```
+  </Step>
+  
+  <Step title="Assert only what you care about">
+    You can now assert on just the high-level details:
+    
+    ```swift
+    await store.send(\.login.submitButtonTapped)
+    await store.receive(\.login.delegate.didLogin) {
+      $0.selectedTab = .activity
+    }
+    ```
+    
+    The test will pass even though we didn't assert on all state changes in the login feature.
+  </Step>
+  
+  <Step title="Show skipped assertions (optional)">
+    To see what assertions are being skipped:
+    
+    ```swift
+    store.exhaustivity = .off(showSkippedAssertions: true)
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  In non-exhaustive mode, `$0` in the trailing closure represents state _after_ the action was sent, not before. This means you cannot use relative mutations like `removeLast()` or `append()`. Use absolute mutations instead.
+</Warning>
+
+## Testing gotchas
+
+### Testing host application
+
+When an application target runs tests, it actually boots up a simulator and runs your actual application entry point. This can cause issues with dependency access.
+
+<CodeGroup>
+```swift App Entry Point
+import SwiftUI
+import ComposableArchitecture
+
+@main
+struct MyApp: App {
+  var body: some Scene {
+    WindowGroup {
+      if TestContext.current == nil {
+        // Your real root view
+      }
+    }
+  }
+}
+```
+</CodeGroup>
+
+This prevents your application code from interfering with tests.
+
+### Long-living test stores
+
+Test stores should always be created in individual tests, not as shared instance variables:
+
+```swift
+@MainActor
+struct FeatureTests {
+  @Test
+  func basics() async {
+    // ✅ Create store inside test
+    let store = TestStore(initialState: Feature.State()) {
+      Feature()
+    }
+    // ...
+  }
+}
+```
+
+If a test store doesn't deinitialize at the end of a test, you must explicitly call `finish`:
+
+```swift
+await store.finish()
+```
+
+### Statically linking tests
+
+If you statically link the `ComposableArchitecture` module to your tests target, its implementation may clash with the implementation linked to the app itself.
+
+**Solution:** Remove the static link to `ComposableArchitecture` from your test target. In Xcode, go to "Build Phases" and remove it from "Link Binary With Libraries". When using SwiftPM, remove it from the `testTarget`'s `dependencies` array.
+
+## Best practices
+
+<CardGroup cols={2}>
+  <Card title="Use hard-coded values" icon="check">
+    Assert with exact values rather than calculations in your test closures
+  </Card>
+  <Card title="Test effects exhaustively" icon="check">
+    Always assert on actions received from effects
+  </Card>
+  <Card title="Control dependencies" icon="check">
+    Use dependency injection for clocks, UUIDs, dates, and other controlled values
+  </Card>
+  <Card title="Non-exhaustive for integration" icon="check">
+    Use non-exhaustive testing for complex feature integration tests
+  </Card>
+</CardGroup>

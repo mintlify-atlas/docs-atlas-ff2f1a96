@@ -1,0 +1,184 @@
+---
+title: Counter
+description: Learn the basics of TCA with a simple counter example
+---
+
+The Counter example demonstrates the fundamental concepts of The Composable Architecture. It's the perfect starting point for understanding how state, actions, and reducers work together.
+
+## Overview
+
+This example shows how to:
+- Define state using `@ObservableState`
+- Handle actions with a `Reducer`
+- Build SwiftUI views that observe store changes
+- Send actions from the view layer
+
+## Implementation
+
+<CodeGroup>
+
+```swift Reducer
+import ComposableArchitecture
+import SwiftUI
+
+@Reducer
+struct Counter {
+  @ObservableState
+  struct State: Equatable {
+    var count = 0
+  }
+
+  enum Action {
+    case decrementButtonTapped
+    case incrementButtonTapped
+  }
+
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {n      case .decrementButtonTapped:
+        state.count -= 1
+        return .none
+      case .incrementButtonTapped:
+        state.count += 1
+        return .none
+      }
+    }
+  }
+}
+```
+
+```swift View
+struct CounterView: View {
+  let store: StoreOf<Counter>
+
+  var body: some View {
+    HStack {
+      Button {
+        store.send(.decrementButtonTapped)
+      } label: {
+        Image(systemName: "minus")
+      }
+
+      Text("\(store.count)")
+        .monospacedDigit()
+
+      Button {
+        store.send(.incrementButtonTapped)
+      } label: {
+        Image(systemName: "plus")
+      }
+    }
+  }
+}
+```
+
+```swift Preview
+#Preview {
+  NavigationStack {
+    CounterView(
+      store: Store(initialState: Counter.State()) {
+        Counter()
+      }
+    )
+  }
+}
+```
+
+</CodeGroup>
+
+## Key Concepts
+
+### State
+
+The `State` struct holds all the mutable data for the feature. Here, we only need a single integer `count`:
+
+```swift
+@ObservableState
+struct State: Equatable {
+  var count = 0
+}
+```
+
+The `@ObservableState` macro makes the state observable by SwiftUI, automatically updating views when state changes.
+
+### Actions
+
+Actions represent all the ways users can interact with the feature:
+
+```swift
+enum Action {
+  case decrementButtonTapped
+  case incrementButtonTapped
+}
+```
+
+### Reducer
+
+The reducer handles state mutations based on actions:
+
+```swift
+Reduce { state, action in
+  switch action {
+  case .decrementButtonTapped:
+    state.count -= 1
+    return .none
+  case .incrementButtonTapped:
+    state.count += 1
+    return .none
+  }
+}
+```
+
+Each action modifies the state and returns an effect. Here, we return `.none` because there are no side effects to execute.
+
+### View Integration
+
+The view observes the store and sends actions:
+
+```swift
+let store: StoreOf<Counter>
+
+// Access state
+Text("\(store.count)")
+
+// Send actions
+Button {
+  store.send(.incrementButtonTapped)
+}
+```
+
+## Testing
+
+This simple structure makes testing straightforward:
+
+```swift
+@Test
+func testCounter() async {
+  let store = TestStore(initialState: Counter.State()) {
+    Counter()
+  }
+
+  await store.send(.incrementButtonTapped) {
+    $0.count = 1
+  }
+
+  await store.send(.incrementButtonTapped) {
+    $0.count = 2
+  }
+
+  await store.send(.decrementButtonTapped) {
+    $0.count = 1
+  }
+}
+```
+
+## Source Code
+
+View the complete example in the TCA repository:
+- [Counter.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/CaseStudies/SwiftUICaseStudies/01-GettingStarted-Counter.swift)
+
+## Next Steps
+
+- Learn about [composition](/examples/two-counters) by embedding multiple counters
+- Explore [effects](/fundamentals/effects) for side effects
+- See [testing](/fundamentals/testing) for comprehensive test coverage

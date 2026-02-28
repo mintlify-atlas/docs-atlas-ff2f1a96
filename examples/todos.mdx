@@ -1,0 +1,370 @@
+---
+title: Todos
+description: Build a todo list app with collections, filtering, and animations
+---
+
+The Todos example demonstrates how to build a full-featured list application using TCA. It showcases collections, bindings, filtering, and coordinated animations.
+
+## Overview
+
+This example shows how to:
+- Manage collections of child features with `forEach`
+- Use `@Bindable` for two-way bindings
+- Filter and transform state for views
+- Coordinate animations with effects
+- Handle list operations (add, delete, move)
+
+## Implementation
+
+<CodeGroup>
+
+```swift Todos Reducer
+import ComposableArchitecture
+import SwiftUI
+
+enum Filter: LocalizedStringKey, CaseIterable, Hashable {
+  case all = "All"
+  case active = "Active"
+  case completed = "Completed"
+}
+
+@Reducer
+struct Todos {
+  @ObservableState
+  struct State: Equatable {
+    var editMode: EditMode = .inactive
+    var filter: Filter = .all
+    var todos: IdentifiedArrayOf<Todo.State> = []
+
+    var filteredTodos: IdentifiedArrayOf<Todo.State> {
+      switch filter {
+      case .active: return self.todos.filter { !$0.isComplete }
+      case .all: return self.todos
+      case .completed: return self.todos.filter(\.isComplete)
+      }
+    }
+  }
+
+  enum Action: BindableAction, Sendable {
+    case addTodoButtonTapped
+    case binding(BindingAction<State>)
+    case clearCompletedButtonTapped
+    case delete(IndexSet)
+    case move(IndexSet, Int)
+    case sortCompletedTodos
+    case todos(IdentifiedActionOf<Todo>)
+  }
+
+  @Dependency(\.continuousClock) var clock
+  @Dependency(\.uuid) var uuid
+  private enum CancelID { case todoCompletion }
+
+  var body: some Reducer<State, Action> {
+    BindingReducer()
+    Reduce { state, action in
+      switch action {
+      case .addTodoButtonTapped:
+        state.todos.insert(Todo.State(id: self.uuid()), at: 0)
+        return .none
+
+      case .binding:
+        return .none
+
+      case .clearCompletedButtonTapped:
+        state.todos.removeAll(where: \.isComplete)
+        return .none
+
+      case .delete(let indexSet):
+        let filteredTodos = state.filteredTodos
+        for index in indexSet {
+          state.todos.remove(id: filteredTodos[index].id)
+        }
+        return .none
+
+      case .move(var source, var destination):
+        if state.filter == .completed {
+          source = IndexSet(
+            source
+              .map { state.filteredTodos[$0] }
+              .compactMap { state.todos.index(id: $0.id) }
+          )
+          destination =
+            (destination < state.filteredTodos.endIndex
+              ? state.todos.index(id: state.filteredTodos[destination].id)
+              : state.todos.endIndex)
+            ?? destination
+        }
+
+        state.todos.move(fromOffsets: source, toOffset: destination)
+
+        return .run { send in
+          try await self.clock.sleep(for: .milliseconds(100))
+          await send(.sortCompletedTodos)
+        }
+
+      case .sortCompletedTodos:
+        state.todos.sort { $1.isComplete && !$0.isComplete }
+        return .none
+
+      case .todos(.element(id: _, action: .binding(\.isComplete))):
+        return .run { send in
+          try await self.clock.sleep(for: .seconds(1))
+          await send(.sortCompletedTodos, animation: .default)
+        }
+        .cancellable(id: CancelID.todoCompletion, cancelInFlight: true)
+
+      case .todos:
+        return .none
+      }
+    }
+    .forEach(\.todos, action: \.todos) {
+      Todo()
+    }
+  }
+}
+```
+
+```swift Todo Reducer
+@Reducer
+struct Todo {
+  @ObservableState
+  struct State: Equatable, Identifiable {
+    var description = ""
+    let id: UUID
+    var isComplete = false
+  }
+
+  enum Action: BindableAction, Sendable {
+    case binding(BindingAction<State>)
+  }
+
+  var body: some Reducer<State, Action> {
+    BindingReducer()
+  }
+}
+
+struct TodoView: View {
+  @Bindable var store: StoreOf<Todo>
+
+  var body: some View {
+    HStack {
+      Button {
+        store.isComplete.toggle()
+      } label: {
+        Image(systemName: store.isComplete ? "checkmark.square" : "square")
+      }
+      .buttonStyle(.plain)
+
+      TextField("Untitled Todo", text: $store.description)
+    }
+    .foregroundColor(store.isComplete ? .gray : nil)
+  }
+}
+```
+
+```swift View
+struct AppView: View {
+  @Bindable var store: StoreOf<Todos>
+
+  var body: some View {
+    NavigationStack {
+      VStack(alignment: .leading) {
+        Picker("Filter", selection: $store.filter.animation()) {
+          ForEach(Filter.allCases, id: \.self) { filter in
+            Text(filter.rawValue).tag(filter)
+          }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal)
+
+        List {
+          ForEach(
+            store.scope(state: \.filteredTodos, action: \.todos)
+          ) { store in
+            TodoView(store: store)
+          }
+          .onDelete { store.send(.delete($0)) }
+          .onMove { store.send(.move($0, $1)) }
+        }
+      }
+      .navigationTitle("Todos")
+      .navigationBarItems(
+        trailing: HStack(spacing: 20) {
+          EditButton()
+          Button("Clear Completed") {
+            store.send(
+              .clearCompletedButtonTapped,
+              animation: .default
+            )
+          }
+          .disabled(!store.todos.contains(where: \.isComplete))
+          Button("Add Todo") {
+            store.send(
+              .addTodoButtonTapped,
+              animation: .default
+            )
+          }
+        }
+      )
+      .environment(\.editMode, $store.editMode)
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+## Key Concepts
+
+### Collections with forEach
+
+The `forEach` operator manages a collection of child features:
+
+```swift
+.forEach(\.todos, action: \.todos) {
+  Todo()
+}
+```
+
+This automatically:
+- Runs the `Todo` reducer for each element
+- Routes actions to the correct todo by ID
+- Maintains independent state for each todo
+
+### IdentifiedArray
+
+`IdentifiedArrayOf` provides efficient collection management:
+
+```swift
+var todos: IdentifiedArrayOf<Todo.State> = []
+
+// Add at beginning
+state.todos.insert(Todo.State(id: uuid()), at: 0)
+
+// Remove by ID
+state.todos.remove(id: todoID)
+
+// Remove by predicate
+state.todos.removeAll(where: \.isComplete)
+```
+
+### Bindings
+
+`BindingReducer` enables two-way bindings:
+
+```swift
+var body: some Reducer<State, Action> {
+  BindingReducer()  // Handles all binding actions
+  Reduce { state, action in
+    // Custom logic
+  }
+}
+```
+
+In the view:
+
+```swift
+@Bindable var store: StoreOf<Todo>
+
+TextField("Untitled Todo", text: $store.description)
+```
+
+### Computed State
+
+Derived state for filtering:
+
+```swift
+var filteredTodos: IdentifiedArrayOf<Todo.State> {
+  switch filter {
+  case .active: return self.todos.filter { !$0.isComplete }
+  case .all: return self.todos
+  case .completed: return self.todos.filter(\.isComplete)
+  }
+}
+```
+
+Scope to filtered todos in the view:
+
+```swift
+ForEach(store.scope(state: \.filteredTodos, action: \.todos)) { store in
+  TodoView(store: store)
+}
+```
+
+### Coordinated Animations
+
+Delay sorting to allow animations to complete:
+
+```swift
+case .todos(.element(id: _, action: .binding(\.isComplete))):
+  return .run { send in
+    try await self.clock.sleep(for: .seconds(1))
+    await send(.sortCompletedTodos, animation: .default)
+  }
+  .cancellable(id: CancelID.todoCompletion, cancelInFlight: true)
+```
+
+### Observing Child Actions
+
+The parent observes when a todo is completed and schedules sorting:
+
+```swift
+case .todos(.element(id: _, action: .binding(\.isComplete))):
+  // A todo's completion status changed
+  return .run { send in
+    try await self.clock.sleep(for: .seconds(1))
+    await send(.sortCompletedTodos, animation: .default)
+  }
+```
+
+## Testing
+
+```swift
+@Test
+func testAddTodo() async {
+  let store = TestStore(initialState: Todos.State()) {
+    Todos()
+  } withDependencies: {
+    $0.uuid = .incrementing
+  }
+
+  await store.send(.addTodoButtonTapped) {
+    $0.todos = [
+      Todo.State(id: UUID(0))
+    ]
+  }
+}
+
+@Test
+func testCompleteTodo() async {
+  let store = TestStore(
+    initialState: Todos.State(
+      todos: [
+        Todo.State(id: UUID(0), description: "Milk")
+      ]
+    )
+  ) {
+    Todos()
+  }
+
+  await store.send(.todos(.element(id: UUID(0), action: .binding(\.isComplete)))) {
+    $0.todos[id: UUID(0)]?.isComplete = true
+  }
+
+  await store.receive(\.sortCompletedTodos) {
+    // Completed todos moved to bottom
+  }
+}
+```
+
+## Source Code
+
+View the complete example in the TCA repository:
+- [Todos.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/Todos/Todos/Todos.swift)
+- [Todo.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/Todos/Todos/Todo.swift)
+
+## Next Steps
+
+- Learn more about [collections](/fundamentals/collections)
+- Explore [bindings](/fundamentals/bindings) in depth
+- See [effects](/fundamentals/effects) for async operations

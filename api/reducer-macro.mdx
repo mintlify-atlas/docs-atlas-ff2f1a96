@@ -1,0 +1,173 @@
+---
+title: '@Reducer'
+description: A macro that helps implement conformance to the Reducer protocol for a type
+---
+
+## Overview
+
+The `@Reducer` macro is the primary way to define features in The Composable Architecture. It synthesizes the necessary boilerplate code to conform your type to the `Reducer` protocol, allowing you to focus on your feature's logic.
+
+When applied to a type, the macro generates:
+- `State` and `Action` type definitions from nested types or enums
+- Protocol conformance to `Reducer`
+- Additional helper types for enum reducers like `CaseScope`
+- Protocol conformance to `CaseReducer` for enum reducers
+
+## Basic Usage
+
+Apply the `@Reducer` macro to a struct that defines your feature:
+
+```swift
+@Reducer
+struct Feature {
+  struct State {
+    var count = 0
+    var isLoading = false
+  }
+  
+  enum Action {
+    case incrementButtonTapped
+    case decrementButtonTapped
+    case response(Result<Int, Error>)
+  }
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      switch action {
+      case .incrementButtonTapped:
+        state.count += 1
+        return .none
+        
+      case .decrementButtonTapped:
+        state.count -= 1
+        return .none
+        
+      case .response(.success(let value)):
+        state.count = value
+        state.isLoading = false
+        return .none
+        
+      case .response(.failure):
+        state.isLoading = false
+        return .none
+      }
+    }
+  }
+}
+```
+
+## Enum Reducers
+
+The `@Reducer` macro also supports enum-based reducers for modeling navigation destinations or mutually exclusive states:
+
+```swift
+@Reducer
+enum Destination {
+  case addItem(AddItemFeature)
+  case editItem(EditItemFeature)
+  case settings(SettingsFeature)
+}
+```
+
+For enum reducers, the macro synthesizes additional helpers for scoping into each case.
+
+## Using with Dependencies
+
+The `@Reducer` macro works seamlessly with the `@Dependency` property wrapper:
+
+```swift
+@Reducer
+struct Feature {
+  struct State { /* ... */ }
+  enum Action { /* ... */ }
+  
+  @Dependency(\.apiClient) var apiClient
+  @Dependency(\.uuid) var uuid
+  @Dependency(\.continuousClock) var clock
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      // Use dependencies here
+      switch action {
+      case .loadData:
+        return .run { send in
+          let data = try await apiClient.fetchData()
+          await send(.dataLoaded(data))
+        }
+      }
+    }
+  }
+}
+```
+
+## Using with ObservableState
+
+Combine `@Reducer` with `@ObservableState` for SwiftUI observation:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State {
+    var count = 0
+    var message = ""
+  }
+  
+  enum Action {
+    case incrementTapped
+  }
+  
+  var body: some ReducerOf<Self> {
+    Reduce { state, action in
+      switch action {
+      case .incrementTapped:
+        state.count += 1
+        return .none
+      }
+    }
+  }
+}
+```
+
+## Special Case Macros
+
+When working with enum reducers, you can use additional macros to handle special cases:
+
+### @ReducerCaseEphemeral
+
+Marks a case as holding ephemeral state like alerts or confirmation dialogs:
+
+```swift
+@Reducer
+enum Destination {
+  @ReducerCaseEphemeral
+  case alert(AlertState<Alert>)
+  
+  case feature(ChildFeature)
+  
+  enum Alert {
+    case confirmButtonTapped
+    case cancelButtonTapped
+  }
+}
+```
+
+### @ReducerCaseIgnored
+
+Marks a case that holds plain data rather than a reducer feature:
+
+```swift
+@Reducer
+enum Destination {
+  @ReducerCaseIgnored
+  case meeting(id: Meeting.ID)
+  
+  case editMeeting(EditMeetingFeature)
+}
+```
+
+## See Also
+
+- [ObservableState Macro](/api/observable-state) - Make state observable for SwiftUI
+- [Dependency Property Wrapper](/api/dependency) - Inject dependencies into reducers
+- [Reducer Protocol](/api/reducer) - The Reducer protocol documentation

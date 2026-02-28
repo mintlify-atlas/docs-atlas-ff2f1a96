@@ -1,0 +1,188 @@
+---
+title: "Navigation Overview"
+description: "Learn about the two main forms of state-driven navigation in TCA: tree-based and stack-based navigation, and their tradeoffs"
+---
+
+## What is Navigation?
+
+Navigation in TCA is broadly defined as **a change of mode in the application**. This includes drill-downs, sheets, popovers, alerts, confirmation dialogs, and any other UI transition where state goes from not existing to existing (or vice-versa).
+
+State-driven navigation falls into two main categories:
+
+<CardGroup cols={2}>
+  <Card title="Tree-based Navigation" icon="tree" href="/navigation/tree-based">
+    Navigation modeled with optionals and enums
+  </Card>
+  <Card title="Stack-based Navigation" icon="layer-group" href="/navigation/stack-based">
+    Navigation modeled with flat collections
+  </Card>
+</CardGroup>
+
+Nearly all real-world applications use a combination of both styles. Understanding their strengths and weaknesses is crucial for modeling your domains effectively.
+
+## Defining Navigation
+
+For TCA purposes, we use the following definitions:
+
+<Note>
+**Navigation** is a change of mode in the application.
+
+**Change of mode** is when some piece of state goes from not existing to existing, or vice-versa.
+</Note>
+
+When state switches from not existing to existing, that represents navigation. When it switches back to not existing, it represents undoing the navigation and returning to the previous mode.
+
+## Tree-based Navigation
+
+Tree-based navigation uses Swift's `Optional` type to represent the existence or non-existence of state. When multiple states are nested, they form a tree-like structure.
+
+### Example
+
+Suppose you have an inventory feature that can drill down to a detail screen:
+
+```swift
+@Reducer
+struct InventoryFeature {
+  @ObservableState
+  struct State {
+    @Presents var detailItem: DetailItemFeature.State?
+    // ...
+  }
+  // ...
+}
+```
+
+The detail screen can open an edit sheet:
+
+```swift
+@Reducer
+struct DetailItemFeature {
+  @ObservableState
+  struct State {
+    @Presents var editItem: EditItemFeature.State?
+    // ...
+  }
+  // ...
+}
+```
+
+And the edit feature can show an alert:
+
+```swift
+@Reducer
+struct EditItemFeature {
+  struct State {
+    @Presents var alert: AlertState<AlertAction>?
+    // ...
+  }
+  // ...
+}
+```
+
+### Deep Linking
+
+With tree-based navigation, deep-linking is simply constructing deeply nested state:
+
+```swift
+InventoryView(
+  store: Store(
+    initialState: InventoryFeature.State(
+      detailItem: DetailItemFeature.State(      // Drill-down to detail
+        editItem: EditItemFeature.State(        // Open edit modal
+          alert: AlertState {                   // Open alert
+            TextState("This item is invalid.")
+          }
+        )
+      )
+    )
+  ) {
+    InventoryFeature()
+  }
+)
+```
+
+<Info>
+Read the dedicated [Tree-based Navigation](/navigation/tree-based) article for detailed implementation guidance.
+</Info>
+
+## Stack-based Navigation
+
+Stack-based navigation models the presentation of features using collections. This is most commonly used with SwiftUI's `NavigationStack`, where an entire stack of features is represented by a collection of data.
+
+### Example
+
+Define an enum holding all possible features that can be navigated to:
+
+```swift
+enum Path {
+  case detail(DetailItemFeature.State)
+  case edit(EditItemFeature.State)
+  // ...
+}
+```
+
+A collection represents the navigation stack:
+
+```swift
+let path: [Path] = [
+  .detail(DetailItemFeature.State(item: item)),
+  .edit(EditItemFeature.State(item: item)),
+  // ...
+]
+```
+
+The collection can be any length, including empty (representing the root of the stack), or very long (representing deep navigation).
+
+<Info>
+Read the dedicated [Stack-based Navigation](/navigation/stack-based) article for detailed implementation guidance.
+</Info>
+
+## Comparing Approaches
+
+Most applications use a mixture of both approaches. Here's how they compare:
+
+### Tree-based Navigation
+
+<AccordionGroup>
+  <Accordion title="Pros" icon="check">
+    - **Concise modeling**: Statically describe all valid navigation paths, making invalid states impossible
+    - **Finite navigation paths**: Enforces relationships between screens (e.g., edit only accessible from detail)
+    - **Better modularity**: Feature modules are self-contained with fully functional previews
+    - **Easier integration testing**: Tight integration makes unit testing interactions straightforward
+    - **API unification**: Single style handles drill-downs, sheets, popovers, alerts, dialogs, and more
+  </Accordion>
+
+  <Accordion title="Cons" icon="xmark">
+    - **Recursive paths are difficult**: Complex navigation patterns (like movie → actor → movie) create recursive dependencies
+    - **Couples features together**: Must compile all destination features to compile the parent feature
+    - **More SwiftUI bugs historically**: Though many fixed in iOS 16.4+
+  </Accordion>
+</AccordionGroup>
+
+### Stack-based Navigation
+
+<AccordionGroup>
+  <Accordion title="Pros" icon="check">
+    - **Handles complex navigation**: Easily supports recursive and complex navigation paths
+    - **Decouples features**: Features can be in separate modules with no dependencies on each other
+    - **Fewer SwiftUI bugs**: `NavigationStack` API is generally more stable
+  </Accordion>
+
+  <Accordion title="Cons" icon="xmark">
+    - **Not concise**: Can express nonsensical navigation paths (e.g., edit before detail)
+    - **Inert isolated previews**: Features in isolation can't navigate to other features
+    - **Harder integration testing**: Difficult to test how features interact when fully decoupled
+    - **Limited scope**: Only applies to drill-downs, not sheets, popovers, alerts, etc.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Tree-based Navigation" icon="tree" href="/navigation/tree-based">
+    Learn about navigation with optionals and enums
+  </Card>
+  <Card title="Stack-based Navigation" icon="layer-group" href="/navigation/stack-based">
+    Learn about navigation with collections
+  </Card>
+</CardGroup>

@@ -1,0 +1,625 @@
+---
+title: Composition
+description: Composing features together to build complex applications
+---
+
+# Composition
+
+Composition is a core principle of TCA. It allows you to build complex features from smaller, focused features that can be developed, tested, and reasoned about independently. TCA provides several tools for composing features together.
+
+## Why Composition?
+
+<CardGroup cols={2}>
+  <Card title="Modularity" icon="cubes">
+    Break large features into smaller, manageable pieces
+  </Card>
+  <Card title="Reusability" icon="recycle">
+    Share features across different parts of your app
+  </Card>
+  <Card title="Testability" icon="microscope">
+    Test features in isolation without dependencies
+  </Card>
+  <Card title="Team Collaboration" icon="users">
+    Different team members can work on separate features
+  </Card>
+</CardGroup>
+
+## Composing State
+
+Compose larger state from smaller state types:
+
+```swift AppFeature.swift
+@Reducer
+struct AppFeature {
+  @ObservableState
+  struct State {
+    var profile: Profile.State
+    var settings: Settings.State
+    var search: Search.State
+  }
+  
+  enum Action {
+    case profile(Profile.Action)
+    case settings(Settings.Action)
+    case search(Search.Action)
+  }
+}
+```
+
+### Child Features
+
+Each child feature is independent:
+
+```swift Profile.swift
+@Reducer
+struct Profile {
+  @ObservableState
+  struct State {
+    var name: String = ""
+    var bio: String = ""
+  }
+  
+  enum Action {
+    case nameChanged(String)
+    case bioChanged(String)
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case let .nameChanged(name):
+        state.name = name
+        return .none
+        
+      case let .bioChanged(bio):
+        state.bio = bio
+        return .none
+      }
+    }
+  }
+}
+```
+
+## Composing Reducers
+
+Use the `Scope` reducer to embed child reducers:
+
+```swift AppFeature.swift
+var body: some Reducer<State, Action> {
+  Scope(state: \.profile, action: \.profile) {
+    Profile()
+  }
+  
+  Scope(state: \.settings, action: \.settings) {
+    Settings()
+  }
+  
+  Scope(state: \.search, action: \.search) {
+    Search()
+  }
+  
+  Reduce { state, action in
+    // Parent logic
+    return .none
+  }
+}
+```
+
+Source: [Scope.swift:1-225](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Reducer/Reducers/Scope.swift)
+
+<Info>
+Child reducers run before parent logic. This ensures children process their actions before the parent potentially changes the state structure.
+</Info>
+
+## Optional Child State
+
+Compose features that may not always be present:
+
+```swift
+@ObservableState
+struct State {
+  @Presents var destination: Destination.State?
+}
+
+enum Action {
+  case destination(PresentationAction<Destination.Action>)
+  case showDestination
+}
+
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    switch action {
+    case .showDestination:
+      state.destination = Destination.State()
+      return .none
+      
+    case .destination:
+      return .none
+    }
+  }
+  .ifLet(\.$destination, action: \.destination) {
+    Destination()
+  }
+}
+```
+
+### The @Presents Macro
+
+The `@Presents` macro simplifies working with optional child state:
+
+```swift
+@ObservableState
+struct State {
+  @Presents var alert: AlertState<Action.Alert>?
+  @Presents var sheet: Sheet.State?
+}
+```
+
+Source: [Macros.swift:136-143](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Macros.swift#L136-L143)
+
+## Collection Composition
+
+Compose features for collections of child state:
+
+```swift TodoList.swift
+import IdentifiedCollections
+
+@Reducer
+struct TodoList {
+  @ObservableState
+  struct State {
+    var todos: IdentifiedArrayOf<Todo.State> = []
+  }
+  
+  enum Action {
+    case todos(IdentifiedActionOf<Todo>)
+    case addTodo
+    case deleteTodo(id: Todo.State.ID)
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .addTodo:
+        state.todos.append(Todo.State(id: UUID()))
+        return .none
+        
+      case let .deleteTodo(id):
+        state.todos.remove(id: id)
+        return .none
+        
+      case .todos:
+        return .none
+      }
+    }
+    .forEach(\.todos, action: \.todos) {
+      Todo()
+    }
+  }
+}
+```
+
+### IdentifiedArray
+
+Use `IdentifiedArray` for collections:
+
+```swift
+import IdentifiedCollections
+
+@ObservableState
+struct Todo: Identifiable {
+  let id: UUID
+  var description: String
+  var isComplete: Bool
+}
+
+// Instead of:
+var todos: [Todo] = []
+
+// Use:
+var todos: IdentifiedArrayOf<Todo> = []
+```
+
+<Tip>
+`IdentifiedArray` provides O(1) lookups and ensures unique elements, making it perfect for managing collections in TCA.
+</Tip>
+
+## Enum-Based Composition
+
+Use enums to model mutually exclusive child states:
+
+```swift Destination.swift
+@Reducer
+enum Destination {
+  case addItem(AddItem)
+  case editItem(EditItem)
+  case settings(Settings)
+}
+
+@Reducer
+struct Parent {
+  @ObservableState
+  struct State {
+    @Presents var destination: Destination.State?
+  }
+  
+  enum Action {
+    case destination(PresentationAction<Destination.Action>)
+    case showAddItem
+    case showEditItem(Item)
+    case showSettings
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .showAddItem:
+        state.destination = .addItem(AddItem.State())
+        return .none
+        
+      case let .showEditItem(item):
+        state.destination = .editItem(EditItem.State(item: item))
+        return .none
+        
+      case .showSettings:
+        state.destination = .settings(Settings.State())
+        return .none
+        
+      case .destination:
+        return .none
+      }
+    }
+    .ifLet(\.$destination, action: \.destination)
+  }
+}
+```
+
+## Parent-Child Communication
+
+Children can communicate with parents through delegate actions:
+
+```swift ChildFeature.swift
+@Reducer
+struct Child {
+  @ObservableState
+  struct State {
+    var text: String = ""
+  }
+  
+  enum Action {
+    case saveButtonTapped
+    case cancelButtonTapped
+    case delegate(Delegate)
+    
+    enum Delegate {
+      case didSave(String)
+      case didCancel
+    }
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .saveButtonTapped:
+        return .send(.delegate(.didSave(state.text)))
+        
+      case .cancelButtonTapped:
+        return .send(.delegate(.didCancel))
+        
+      case .delegate:
+        return .none
+      }
+    }
+  }
+}
+```
+
+### Parent Handling Delegate Actions
+
+```swift ParentFeature.swift
+@Reducer
+struct Parent {
+  @ObservableState
+  struct State {
+    @Presents var child: Child.State?
+    var savedItems: [String] = []
+  }
+  
+  enum Action {
+    case child(PresentationAction<Child.Action>)
+    case showChild
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .showChild:
+        state.child = Child.State()
+        return .none
+        
+      case let .child(.presented(.delegate(.didSave(text)))):
+        state.savedItems.append(text)
+        state.child = nil
+        return .none
+        
+      case .child(.presented(.delegate(.didCancel))):
+        state.child = nil
+        return .none
+        
+      case .child:
+        return .none
+      }
+    }
+    .ifLet(\.$child, action: \.child) {
+      Child()
+    }
+  }
+}
+```
+
+<Note>
+Delegate actions are a clean way for children to notify parents without creating tight coupling.
+</Note>
+
+## Combining Multiple Reducers
+
+Use `CombineReducers` to group reducers:
+
+```swift
+var body: some Reducer<State, Action> {
+  CombineReducers {
+    AnalyticsReducer()
+    LoggingReducer()
+    CoreReducer()
+  }
+  ._printChanges()
+}
+```
+
+Source: [CombineReducers.swift:1-45](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Reducer/Reducers/CombineReducers.swift)
+
+## Scoping Stores
+
+Scope stores to pass to child views:
+
+```swift AppView.swift
+struct AppView: View {
+  let store: StoreOf<AppFeature>
+  
+  var body: some View {
+    TabView {
+      ProfileView(
+        store: store.scope(state: \.profile, action: \.profile)
+      )
+      .tabItem { Label("Profile", systemImage: "person") }
+      
+      SettingsView(
+        store: store.scope(state: \.settings, action: \.settings)
+      )
+      .tabItem { Label("Settings", systemImage: "gear") }
+    }
+  }
+}
+```
+
+Source: [Store.swift:220-268](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L220-L268)
+
+### Benefits of Scoping
+
+1. **Type Safety**: Child views can't access parent state
+2. **Performance**: Views only re-render when their scope changes
+3. **Modularity**: Child features can be extracted to separate modules
+4. **Testing**: Features can be tested independently
+
+## Navigation Patterns
+
+### Stack-Based Navigation
+
+For navigation stacks:
+
+```swift
+import SwiftUI
+
+@ObservableState
+struct State {
+  var path = StackState<Path.State>()
+}
+
+enum Action {
+  case path(StackActionOf<Path>)
+}
+
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // Core logic
+  }
+  .forEach(\.path, action: \.path)
+}
+
+struct ContentView: View {
+  @Bindable var store: StoreOf<Feature>
+  
+  var body: some View {
+    NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
+      // Root view
+    }
+  }
+}
+```
+
+### Tree-Based Navigation
+
+For sheets, popovers, and alerts:
+
+```swift
+@ObservableState
+struct State {
+  @Presents var destination: Destination.State?
+}
+
+enum Action {
+  case destination(PresentationAction<Destination.Action>)
+}
+
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // Core logic
+  }
+  .ifLet(\.$destination, action: \.destination) {
+    Destination()
+  }
+}
+```
+
+## Testing Composed Features
+
+Test features in isolation:
+
+```swift ChildTests.swift
+@MainActor
+final class ChildTests: XCTestCase {
+  func testChild() async {
+    let store = TestStore(initialState: Child.State()) {
+      Child()
+    }
+    
+    await store.send(.saveButtonTapped)
+    await store.receive(\.delegate.didSave)
+  }
+}
+```
+
+Test parent-child integration:
+
+```swift ParentTests.swift
+@MainActor
+final class ParentTests: XCTestCase {
+  func testParentChildIntegration() async {
+    let store = TestStore(initialState: Parent.State()) {
+      Parent()
+    }
+    
+    await store.send(.showChild) {
+      $0.child = Child.State()
+    }
+    
+    await store.send(.child(.presented(.saveButtonTapped)))
+    await store.receive(\.child.presented.delegate.didSave) {
+      $0.savedItems = ["test"]
+      $0.child = nil
+    }
+  }
+}
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Start Small">
+    Begin with small, focused features before composing them:
+    
+    ```swift
+    // ✅ Good: Focused feature
+    @Reducer
+    struct Counter {
+      // Simple state and actions
+    }
+    
+    // ❌ Avoid: Monolithic feature
+    @Reducer
+    struct App {
+      // Everything in one place
+    }
+    ```
+  </Step>
+  
+  <Step title="Compose Hierarchically">
+    Build features in layers:
+    
+    ```
+    App
+    ├── Tab1
+    │   ├── List
+    │   └── Detail
+    └── Tab2
+        ├── Profile
+        └── Settings
+    ```
+  </Step>
+  
+  <Step title="Use Delegate Actions">
+    Children should communicate with parents through delegate actions, not by directly modifying parent state.
+  </Step>
+  
+  <Step title="Scope Appropriately">
+    Scope stores to give views only what they need:
+    
+    ```swift
+    // ✅ Good: Scoped store
+    ChildView(
+      store: store.scope(state: \.child, action: \.child)
+    )
+    
+    // ❌ Avoid: Passing full store
+    ChildView(store: store)
+    ```
+  </Step>
+  
+  <Step title="Keep Features Independent">
+    Features should work without knowledge of their parents:
+    
+    ```swift
+    // ✅ Good: Self-contained
+    @Reducer
+    struct Profile {
+      // No parent dependencies
+    }
+    
+    // ❌ Avoid: Coupled to parent
+    @Reducer
+    struct Profile {
+      var parentState: ParentFeature.State  // Don't do this
+    }
+    ```
+  </Step>
+</Steps>
+
+## Common Patterns
+
+### Shared State
+
+Use the `@Shared` property wrapper for state shared across features:
+
+```swift
+@ObservableState
+struct State {
+  @Shared(.appStorage("isLoggedIn")) var isLoggedIn = false
+}
+```
+
+### Cross-Feature Communication
+
+Use effects to communicate between siblings:
+
+```swift
+case .featureA(.delegate(.didComplete)):
+  return .send(.featureB(.start))
+```
+
+### Progressive Disclosure
+
+Load child features lazily:
+
+```swift
+case .showChild:
+  guard state.child == nil else { return .none }
+  state.child = Child.State()
+  return .none
+```
+
+## Related Topics
+
+- [Reducers](/concepts/reducers) - Building blocks of composition
+- [State Management](/concepts/state-management) - Composing state
+- [Store](/concepts/store) - Scoping stores
+- [Navigation](/guides/navigation) - Navigation patterns in TCA

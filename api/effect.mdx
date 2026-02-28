@@ -1,0 +1,267 @@
+---
+title: Effect
+description: Type for modeling side effects
+---
+
+An `Effect` represents a unit of asynchronous work that can emit actions back into the system. Effects are returned from reducers to perform side effects like network requests, timers, database operations, and more.
+
+## Type Definition
+
+```swift
+public struct Effect<Action>: Sendable
+```
+
+## Creating Effects
+
+### None
+
+<ParamField path="none" type="static var">
+  An effect that does nothing and completes immediately. Useful for situations where you must return an effect, but you don't need to do anything.
+  
+  ```swift
+  case .cancelButtonTapped:
+    state.isLoading = false
+    return .none
+  ```
+</ParamField>
+
+### Run
+
+<ParamField path="run(priority:name:operation:catch:)" type="static func">
+  Wraps an asynchronous unit of work that can emit actions any number of times in an effect.
+  
+  **Parameters:**
+  - `priority`: Priority of the underlying task. If `nil`, the priority will come from `Task.currentPriority`
+  - `name`: An optional name to associate with the task that runs this effect
+  - `operation`: The operation to execute
+  - `handler`: An error handler, invoked if the operation throws an error other than `CancellationError`
+  
+  **Returns:** An effect wrapping the given asynchronous work.
+  
+  ```swift
+  public static func run(
+    priority: TaskPriority? = nil,
+    name: String? = nil,
+    operation: @escaping @Sendable (_ send: Send<Action>) async throws -> Void,
+    catch handler: (@Sendable (_ error: any Error, _ send: Send<Action>) async -> Void)? = nil
+  ) -> Self
+  ```
+</ParamField>
+
+### Send
+
+<ParamField path="send(_:)" type="static func">
+  Initializes an effect that immediately emits the action passed in.
+  
+  <Note>
+    We do not recommend using `Effect.send` to share logic. Instead, limit usage to child-parent communication, where a child may want to emit a "delegate" action for a parent to listen to.
+  </Note>
+  
+  ```swift
+  public static func send(_ action: Action) -> Self
+  ```
+</ParamField>
+
+<ParamField path="send(_:animation:)" type="static func">
+  Initializes an effect that immediately emits the action passed in with animation.
+  
+  **Parameters:**
+  - `action`: The action that is immediately emitted by the effect
+  - `animation`: An animation
+  
+  ```swift
+  public static func send(_ action: Action, animation: Animation? = nil) -> Self
+  ```
+</ParamField>
+
+## Usage Examples
+
+### Basic Run Effect
+
+Attach to an async sequence in a dependency client:
+
+```swift
+struct EventsClient {
+  var events: () -> any AsyncSequence<Event, Never>
+}
+
+// In your reducer:
+case .startButtonTapped:
+  return .run { send in
+    for await event in self.events() {
+      send(.event(event))
+    }
+  }
+```
+
+### Error Handling
+
+The closure provided to `run` is allowed to throw, but any non-cancellation errors thrown will cause a runtime warning. To catch errors, use the `catch` trailing closure:
+
+```swift
+case .loadButtonTapped:
+  state.isLoading = true
+  return .run { send in
+    let data = try await apiClient.fetchData()
+    await send(.dataLoaded(data))
+  } catch: { error, send in
+    await send(.errorOccurred(error))
+  }
+```
+
+### Network Request Example
+
+```swift
+case .searchQueryChanged(let query):
+  state.query = query
+  return .run { send in
+    try await clock.sleep(for: .seconds(0.3))
+    let results = try await apiClient.search(query)
+    await send(.searchResponse(.success(results)))
+  } catch: { error, send in
+    await send(.searchResponse(.failure(error)))
+  }
+```
+
+## Composing Effects
+
+### Merge
+
+<ParamField path="merge(_:)" type="static func">
+  Merges a variadic list of effects together into a single effect, which runs the effects at the same time.
+  
+  ```swift
+  public static func merge(_ effects: Self...) -> Self
+  public static func merge(_ effects: some Sequence<Self>) -> Self
+  ```
+  
+  **Example:**
+  
+  ```swift
+  return .merge(
+    .run { send in await send(.trackAnalytics) },
+    .run { send in await send(.updateCache) }
+  )
+  ```
+</ParamField>
+
+<ParamField path="merge(with:)" type="func">
+  Merges this effect and another into a single effect that runs both at the same time.
+  
+  ```swift
+  public func merge(with other: Self) -> Self
+  ```
+</ParamField>
+
+### Concatenate
+
+<ParamField path="concatenate(_:)" type="static func">
+  Concatenates a variadic list of effects together into a single effect, which runs the effects one after the other.
+  
+  ```swift
+  public static func concatenate(_ effects: Self...) -> Self
+  public static func concatenate(_ effects: some Collection<Self>) -> Self
+  ```
+  
+  **Example:**
+  
+  ```swift
+  return .concatenate(
+    .run { send in await send(.startAnimation) },
+    .run { send in await send(.finishAnimation) }
+  )
+  ```
+</ParamField>
+
+<ParamField path="concatenate(with:)" type="func">
+  Concatenates this effect and another into a single effect that first runs this effect, and after it completes or is cancelled, runs the other.
+  
+  ```swift
+  public func concatenate(with other: Self) -> Self
+  ```
+</ParamField>
+
+### Map
+
+<ParamField path="map(_:)" type="func">
+  Transforms all elements from the upstream effect with a provided closure.
+  
+  ```swift
+  public func map<T>(_ transform: @escaping @Sendable (Action) -> T) -> Effect<T>
+  ```
+  
+  **Example:**
+  
+  ```swift
+  return ChildFeature()
+    .reduce(into: &state.child, action: childAction)
+    .map { .child($0) }
+  ```
+</ParamField>
+
+## Send Type
+
+```swift
+@MainActor
+public struct Send<Action>: Sendable
+```
+
+A type that can send actions back into the system when used from `Effect.run`. This type implements `callAsFunction` so that you invoke it as a function:
+
+```swift
+return .run { send in
+  await send(.started)
+  for await event in self.events {
+    send(.event(event))
+  }
+  await send(.finished)
+}
+```
+
+### Methods
+
+<ParamField path="callAsFunction(_:)" type="(Action) -> Void">
+  Sends an action back into the system from an effect.
+  
+  ```swift
+  public func callAsFunction(_ action: Action)
+  ```
+</ParamField>
+
+<ParamField path="callAsFunction(_:animation:)" type="(Action, Animation?) -> Void">
+  Sends an action back into the system from an effect with animation.
+  
+  ```swift
+  public func callAsFunction(_ action: Action, animation: Animation?)
+  ```
+</ParamField>
+
+<ParamField path="callAsFunction(_:transaction:)" type="(Action, Transaction) -> Void">
+  Sends an action back into the system from an effect with transaction.
+  
+  ```swift
+  public func callAsFunction(_ action: Action, transaction: Transaction)
+  ```
+</ParamField>
+
+## Type Aliases
+
+<ParamField path="EffectOf" type="typealias">
+  A convenience type alias for referring to an effect of a given reducer's domain.
+  
+  ```swift
+  public typealias EffectOf<R: Reducer> = Effect<R.Action>
+  ```
+  
+  Instead of specifying the action:
+  
+  ```swift
+  let effect: Effect<Feature.Action>
+  ```
+  
+  You can specify the reducer:
+  
+  ```swift
+  let effect: EffectOf<Feature>
+  ```
+</ParamField>

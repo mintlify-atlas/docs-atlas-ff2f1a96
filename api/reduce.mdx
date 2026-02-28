@@ -1,0 +1,123 @@
+---
+title: Reduce
+description: A type-erased reducer for injecting logic without introducing new types
+---
+
+# Reduce
+
+`Reduce` is a type-erased reducer that invokes a given `reduce` function. It's useful for injecting logic into a reducer tree without the overhead of introducing a new type that conforms to `Reducer`.
+
+## Type Signature
+
+```swift
+public struct Reduce<State, Action>: Reducer
+```
+
+## Initializers
+
+### Initialize with a reduce function
+
+```swift
+public init(_ reduce: @escaping (_ state: inout State, _ action: Action) -> Effect<Action>)
+```
+
+Initializes a reducer with a `reduce` function that is called when `reduce(into:action:)` is invoked.
+
+**Parameters:**
+- `reduce`: A function that takes an `inout State` and an `Action`, and returns an `Effect<Action>`
+
+### Type-erase an existing reducer
+
+```swift
+public init(_ reducer: some Reducer<State, Action>)
+```
+
+Type-erases an existing reducer by wrapping it in a `Reduce` instance.
+
+**Parameters:**
+- `reducer`: A reducer that is called when `reduce(into:action:)` is invoked
+
+## Usage
+
+### Basic usage in a reducer body
+
+```swift
+@Reducer
+struct Feature {
+  struct State {
+    var count = 0
+    var isLoading = false
+  }
+  
+  enum Action {
+    case incrementButtonTapped
+    case decrementButtonTapped
+    case loadData
+    case dataResponse(Result<String, Error>)
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .incrementButtonTapped:
+        state.count += 1
+        return .none
+        
+      case .decrementButtonTapped:
+        state.count -= 1
+        return .none
+        
+      case .loadData:
+        state.isLoading = true
+        return .run { send in
+          let data = try await apiClient.fetchData()
+          await send(.dataResponse(.success(data)))
+        } catch: { error, send in
+          await send(.dataResponse(.failure(error)))
+        }
+        
+      case let .dataResponse(result):
+        state.isLoading = false
+        // Handle response...
+        return .none
+      }
+    }
+  }
+}
+```
+
+### Combining with other reducers
+
+`Reduce` can be composed with other reducer builders:
+
+```swift
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // Core logic here
+    switch action {
+    case .incrementTapped:
+      state.count += 1
+      return .none
+    // ...
+    }
+  }
+  .ifLet(\.child, action: \.child) {
+    Child()
+  }
+  .forEach(\.items, action: \.items) {
+    Item()
+  }
+}
+```
+
+## When to Use
+
+- **Inline logic**: When you want to define reducer logic inline without creating a separate conforming type
+- **Simple features**: For straightforward state management that doesn't require complex composition
+- **Type erasure**: When you need to wrap an existing reducer to hide its concrete type
+
+## See Also
+
+- `Reducer` - The base protocol for all reducers
+- `Scope` - For embedding child reducers in parent domains
+- `@ReducerBuilder` - For building complex reducer compositions

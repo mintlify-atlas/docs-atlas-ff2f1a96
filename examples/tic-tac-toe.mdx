@@ -1,0 +1,424 @@
+---
+title: Tic-Tac-Toe
+description: Build a game with modular architecture and multi-UI support
+---
+
+The Tic-Tac-Toe example demonstrates how to build a complete game using TCA with a modular architecture that supports multiple UI frameworks (SwiftUI and UIKit).
+
+## Overview
+
+This example shows how to:
+- Implement game logic in a pure reducer
+- Create reusable game components
+- Support multiple UI frameworks
+- Model game state with custom types
+- Handle win conditions and game flow
+
+## Implementation
+
+<CodeGroup>
+
+```swift Game Reducer
+import ComposableArchitecture
+import SwiftUI
+
+@Reducer
+public struct Game: Sendable {
+  @ObservableState
+  public struct State: Equatable {
+    public var board: Three<Three<Player?>> = .empty
+    public var currentPlayer: Player = .x
+    public let oPlayerName: String
+    public let xPlayerName: String
+
+    public init(oPlayerName: String, xPlayerName: String) {
+      self.oPlayerName = oPlayerName
+      self.xPlayerName = xPlayerName
+    }
+
+    public var currentPlayerName: String {
+      switch self.currentPlayer {
+      case .o: return self.oPlayerName
+      case .x: return self.xPlayerName
+      }
+    }
+  }
+
+  public enum Action: Sendable {
+    case cellTapped(row: Int, column: Int)
+    case playAgainButtonTapped
+    case quitButtonTapped
+  }
+
+  @Dependency(\.dismiss) var dismiss
+
+  public init() {}
+
+  public var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .cellTapped(let row, let column):
+        guard
+          state.board[row][column] == nil,
+          !state.board.hasWinner
+        else { return .none }
+
+        state.board[row][column] = state.currentPlayer
+
+        if !state.board.hasWinner {
+          state.currentPlayer.toggle()
+        }
+
+        return .none
+
+      case .playAgainButtonTapped:
+        state = Game.State(
+          oPlayerName: state.oPlayerName,
+          xPlayerName: state.xPlayerName
+        )
+        return .none
+
+      case .quitButtonTapped:
+        return .run { _ in
+          await self.dismiss()
+        }
+      }
+    }
+  }
+}
+```
+
+```swift Player Model
+public enum Player: Equatable, Sendable {
+  case o
+  case x
+
+  public mutating func toggle() {
+    switch self {
+    case .o: self = .x
+    case .x: self = .o
+    }
+  }
+
+  public var label: String {
+    switch self {
+    case .o: return "⭕️"
+    case .x: return "❌"
+    }
+  }
+}
+```
+
+```swift Board Logic
+extension Three<Three<Player?>> {
+  public static let empty = Self(
+    .init(nil, nil, nil),
+    .init(nil, nil, nil),
+    .init(nil, nil, nil)
+  )
+
+  public var isFilled: Bool {
+    self.allSatisfy { $0.allSatisfy { $0 != nil } }
+  }
+
+  func hasWin(_ player: Player) -> Bool {
+    let winConditions = [
+      [0, 1, 2], [3, 4, 5], [6, 7, 8],  // Rows
+      [0, 3, 6], [1, 4, 7], [2, 5, 8],  // Columns
+      [0, 4, 8], [6, 4, 2],             // Diagonals
+    ]
+
+    for condition in winConditions {
+      let matches = condition.map { self[$0 % 3][$0 / 3] }
+      let matchCount = matches.filter { $0 == player }.count
+      if matchCount == 3 {
+        return true
+      }
+    }
+    return false
+  }
+
+  public var hasWinner: Bool {
+    hasWin(.x) || hasWin(.o)
+  }
+}
+```
+
+```swift SwiftUI View
+public struct GameView: View {
+  let store: StoreOf<Game>
+
+  public var body: some View {
+    GeometryReader { proxy in
+      VStack(spacing: 0.0) {
+        VStack {
+          Text(store.title)
+            .font(.title)
+
+          if store.isPlayAgainButtonVisible {
+            Button("Play again?") {
+              store.send(.playAgainButtonTapped)
+            }
+            .padding(.top, 12)
+            .font(.title)
+          }
+        }
+        .padding(.bottom, 48)
+
+        VStack {
+          rowView(row: 0, proxy: proxy)
+          rowView(row: 1, proxy: proxy)
+          rowView(row: 2, proxy: proxy)
+        }
+        .disabled(store.isGameDisabled)
+      }
+      .navigationTitle("Tic-tac-toe")
+      .navigationBarItems(
+        leading: Button("Quit") {
+          store.send(.quitButtonTapped)
+        }
+      )
+    }
+  }
+
+  func rowView(row: Int, proxy: GeometryProxy) -> some View {
+    HStack(spacing: 0.0) {
+      cellView(row: row, column: 0, proxy: proxy)
+      cellView(row: row, column: 1, proxy: proxy)
+      cellView(row: row, column: 2, proxy: proxy)
+    }
+  }
+
+  func cellView(
+    row: Int,
+    column: Int,
+    proxy: GeometryProxy
+  ) -> some View {
+    Button {
+      store.send(.cellTapped(row: row, column: column))
+    } label: {
+      Text(store.rows[row][column])
+        .frame(
+          width: proxy.size.width / 3,
+          height: proxy.size.width / 3
+        )
+        .background(
+          (row + column).isMultiple(of: 2)
+            ? Color(red: 0.8, green: 0.8, blue: 0.8)
+            : Color(red: 0.6, green: 0.6, blue: 0.6)
+        )
+    }
+  }
+}
+
+extension Game.State {
+  var rows: [[String]] {
+    self.board.map { $0.map { $0?.label ?? "" } }
+  }
+
+  var isGameDisabled: Bool {
+    self.board.hasWinner || self.board.isFilled
+  }
+
+  var isPlayAgainButtonVisible: Bool {
+    self.board.hasWinner || self.board.isFilled
+  }
+
+  var title: String {
+    self.board.hasWinner
+      ? "Winner! Congrats \(self.currentPlayerName)!"
+      : self.board.isFilled
+        ? "Tied game!"
+        : "\(self.currentPlayerName), place your \(self.currentPlayer.label)"
+  }
+}
+```
+
+</CodeGroup>
+
+## Key Concepts
+
+### Custom State Types
+
+The `Three` type provides a fixed-size array for the 3x3 board:
+
+```swift
+var board: Three<Three<Player?>> = .empty
+```
+
+This ensures type safety - the board will always be 3x3.
+
+### Game Rules in State
+
+Win conditions are computed from state:
+
+```swift
+func hasWin(_ player: Player) -> Bool {
+  let winConditions = [
+    [0, 1, 2], [3, 4, 5], [6, 7, 8],  // Rows
+    [0, 3, 6], [1, 4, 7], [2, 5, 8],  // Columns  
+    [0, 4, 8], [6, 4, 2],             // Diagonals
+  ]
+  // Check if any condition is satisfied
+}
+```
+
+### Pure Game Logic
+
+All game logic lives in the reducer:
+
+```swift
+case .cellTapped(let row, let column):
+  // Validate move
+  guard
+    state.board[row][column] == nil,
+    !state.board.hasWinner
+  else { return .none }
+
+  // Apply move
+  state.board[row][column] = state.currentPlayer
+
+  // Switch player if game continues
+  if !state.board.hasWinner {
+    state.currentPlayer.toggle()
+  }
+
+  return .none
+```
+
+### Modular Architecture
+
+The example is organized into focused modules:
+
+- `GameCore` - Game state and logic
+- `GameSwiftUI` - SwiftUI views
+- `GameUIKit` - UIKit views
+- `AppCore` - Root app navigation
+- `LoginCore` - Authentication feature
+- `NewGameCore` - Game setup
+
+This structure makes it easy to:
+- Share logic across UI frameworks
+- Test features in isolation
+- Reuse components
+
+### Derived View State
+
+Extensions compute view-specific state:
+
+```swift
+extension Game.State {
+  var rows: [[String]] {
+    self.board.map { $0.map { $0?.label ?? "" } }
+  }
+
+  var title: String {
+    self.board.hasWinner
+      ? "Winner! Congrats \(self.currentPlayerName)!"
+      : self.board.isFilled
+        ? "Tied game!"
+        : "\(self.currentPlayerName), place your \(self.currentPlayer.label)"
+  }
+}
+```
+
+## Testing
+
+```swift
+@Test
+func testGameFlow() async {
+  let store = TestStore(
+    initialState: Game.State(
+      oPlayerName: "Blob Jr",
+      xPlayerName: "Blob Sr"
+    )
+  ) {
+    Game()
+  }
+
+  // X plays
+  await store.send(.cellTapped(row: 0, column: 0)) {
+    $0.board[0][0] = .x
+    $0.currentPlayer = .o
+  }
+
+  // O plays
+  await store.send(.cellTapped(row: 1, column: 0)) {
+    $0.board[1][0] = .o
+    $0.currentPlayer = .x
+  }
+
+  // X wins
+  await store.send(.cellTapped(row: 0, column: 1)) {
+    $0.board[0][1] = .x
+  }
+
+  await store.send(.cellTapped(row: 0, column: 2)) {
+    $0.board[0][2] = .x
+    // currentPlayer doesn't toggle - game over
+  }
+
+  // Play again
+  await store.send(.playAgainButtonTapped) {
+    $0 = Game.State(
+      oPlayerName: "Blob Jr",
+      xPlayerName: "Blob Sr"
+    )
+  }
+}
+
+@Test
+func testInvalidMove() async {
+  let store = TestStore(
+    initialState: Game.State(
+      oPlayerName: "Blob Jr",
+      xPlayerName: "Blob Sr"
+    )
+  ) {
+    Game()
+  }
+
+  await store.send(.cellTapped(row: 0, column: 0)) {
+    $0.board[0][0] = .x
+    $0.currentPlayer = .o
+  }
+
+  // Try to play in same cell - no changes
+  await store.send(.cellTapped(row: 0, column: 0))
+}
+```
+
+## Multi-Framework Support
+
+The same `Game` reducer powers both SwiftUI and UIKit views:
+
+```swift
+// SwiftUI
+struct GameView: View {
+  let store: StoreOf<Game>
+  // SwiftUI implementation
+}
+
+// UIKit
+class GameViewController: UIViewController {
+  let store: StoreOf<Game>
+  // UIKit implementation
+}
+```
+
+Both views:
+- Observe the same state
+- Send the same actions
+- Share identical business logic
+
+## Source Code
+
+View the complete example in the TCA repository:
+- [GameCore.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/TicTacToe/tic-tac-toe/Sources/GameCore/GameCore.swift)
+- [GameView.swift](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/TicTacToe/tic-tac-toe/Sources/GameSwiftUI/GameView.swift)
+
+## Next Steps
+
+- Explore [modular state management](/fundamentals/composition)
+- Learn about [tree-based navigation](/fundamentals/navigation)
+- See [dependencies](/fundamentals/dependencies) for testing

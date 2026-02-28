@@ -1,0 +1,495 @@
+---
+title: Observation Framework
+description: Understanding Swift's Observation framework and TCA's Perception backport for iOS 13+
+---
+
+TCA leverages Swift's Observation framework (iOS 17+) and provides a backport called Perception for earlier iOS versions (iOS 13+).
+
+## Overview
+
+Starting with version 1.7, The Composable Architecture supports Swift 5.9's Observation framework and includes a backport called **Perception** for iOS 13 and later.
+
+Source: [ObservationBackport.md:1-11](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Documentation.docc/Articles/ObservationBackport.md#L1-L11)
+
+## ObservableState Macro
+
+The `@ObservableState` macro marks your state as observable:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State {
+    var count: Int = 0
+    var isLoading: Bool = false
+    var items: [Item] = []
+  }
+  
+  enum Action {
+    case incrementTapped
+    case loadData
+  }
+}
+```
+
+This macro:
+- Conforms your state to the `ObservableState` protocol
+- Generates observation infrastructure
+- Enables automatic view updates in SwiftUI
+- Works on both iOS 17+ (using Observation) and iOS 13+ (using Perception)
+
+Source: [ObservableState.swift:1-19](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/ObservableState.swift#L1-L19)
+
+## iOS 17+ (Native Observation)
+
+On iOS 17 and later, TCA uses Swift's native Observation framework:
+
+```swift
+import SwiftUI
+import ComposableArchitecture
+
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    // Automatically observes changes
+    VStack {
+      Text("Count: \(store.count)")
+      Button("Increment") {
+        store.send(.incrementTapped)
+      }
+    }
+  }
+}
+```
+
+No special view wrappers are needed—observation works automatically.
+
+### Using @Bindable
+
+For two-way bindings on iOS 17+, use SwiftUI's `@Bindable`:
+
+```swift
+struct FeatureView: View {
+  @Bindable var store: StoreOf<Feature>
+  
+  var body: some View {
+    Form {
+      TextField("Name", text: $store.name)
+      Toggle("Enabled", isOn: $store.isEnabled)
+    }
+  }
+}
+```
+
+## iOS 13-16 (Perception Backport)
+
+For iOS 13 through 16, TCA provides the Perception framework as a backport.
+
+### The @Perceptible Macro
+
+For standalone models (not TCA state), use `@Perceptible` instead of `@Observable`:
+
+```swift
+import Perception
+
+@Perceptible
+class CounterModel {
+  var count = 0
+}
+```
+
+Source: [ObservationBackport.md:19-26](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Documentation.docc/Articles/ObservationBackport.md#L19-L26)
+
+### WithPerceptionTracking
+
+When using Perception on iOS 13-16, wrap your view body in `WithPerceptionTracking`:
+
+```swift
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    WithPerceptionTracking {
+      VStack {
+        Text("Count: \(store.count)")
+        Button("Increment") {
+          store.send(.incrementTapped)
+        }
+      }
+    }
+  }
+}
+```
+
+Source: [ObservationBackport.md:28-45](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Documentation.docc/Articles/ObservationBackport.md#L28-L45)
+
+<Warning>
+  If you access perceptible state outside of `WithPerceptionTracking`, you'll get a runtime warning:
+  
+  > 🟣 Runtime Warning: Perceptible state was accessed but is not being tracked. Track changes to state by wrapping your view in a 'WithPerceptionTracking' view.
+</Warning>
+
+Source: [ObservationBackport.md:50-58](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Documentation.docc/Articles/ObservationBackport.md#L50-L58)
+
+### Perception.Bindable
+
+For bindings on iOS 13-16, use `Perception.Bindable` instead of SwiftUI's `@Bindable`:
+
+```swift
+struct FeatureView: View {
+  @Perception.Bindable var store: StoreOf<Feature>
+  
+  var body: some View {
+    WithPerceptionTracking {
+      Form {
+        TextField("Name", text: $store.name)
+        Toggle("Enabled", isOn: $store.isEnabled)
+      }
+    }
+  }
+}
+```
+
+Source: [ObservationBackport.md:62-81](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Documentation.docc/Articles/ObservationBackport.md#L62-L81)
+
+## Cross-Platform Pattern
+
+For apps supporting both iOS 17+ and earlier versions:
+
+```swift
+import SwiftUI
+import ComposableArchitecture
+
+struct FeatureView: View {
+  #if swift(>=5.9)
+    @Bindable var store: StoreOf<Feature>
+  #else
+    @Perception.Bindable var store: StoreOf<Feature>
+  #endif
+  
+  var body: some View {
+    #if swift(>=5.9)
+      content
+    #else
+      WithPerceptionTracking {
+        content
+      }
+    #endif
+  }
+  
+  @ViewBuilder
+  var content: some View {
+    Form {
+      TextField("Name", text: $store.name)
+      Button("Submit") {
+        store.send(.submitTapped)
+      }
+    }
+  }
+}
+```
+
+## Lazy View Closures
+
+Many SwiftUI closures are lazy and execute after the `body` is computed. These require their own `WithPerceptionTracking`:
+
+```swift
+struct ListView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    WithPerceptionTracking {
+      List {
+        ForEach(store.items, id: \.id) { item in
+          // ❌ Wrong: This closure runs outside WithPerceptionTracking
+          Text(item.title)
+        }
+      }
+    }
+  }
+}
+```
+
+Fix by wrapping the lazy closure content:
+
+```swift
+struct ListView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    WithPerceptionTracking {
+      List {
+        ForEach(store.items, id: \.id) { item in
+          WithPerceptionTracking {
+            // ✅ Correct: Closure content is tracked
+            Text(item.title)
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Source: [ObservationBackport.md:85-116](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Documentation.docc/Articles/ObservationBackport.md#L85-L116)
+
+### Common Lazy Closures
+
+These SwiftUI closures are lazy and need their own `WithPerceptionTracking`:
+
+- `ForEach { ... }`
+- `List { ... }`
+- `LazyVStack { ... }` and `LazyHStack { ... }`
+- `NavigationLink(destination: { ... })`
+- `.background { ... }`
+- `.overlay { ... }`
+- `.sheet(item:) { ... }`
+- `.fullScreenCover(item:) { ... }`
+
+## ObservableState Protocol
+
+The `ObservableState` protocol is the foundation of TCA's observation:
+
+```swift
+public protocol ObservableState: Perceptible {
+  var _$id: ObservableStateID { get }
+  mutating func _$willModify()
+}
+```
+
+Source: [ObservableState.swift:3-13](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/ObservableState.swift#L3-L13)
+
+### Identity Tracking
+
+TCA tracks state identity to optimize view updates:
+
+```swift
+public struct ObservableStateID: Equatable, Hashable, Sendable {
+  // Unique identifier for state instances
+}
+```
+
+Source: [ObservableState.swift:21-103](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/ObservableState.swift#L21-L103)
+
+## Store Observation
+
+The `Store` type integrates with both Observation and Perception:
+
+```swift
+extension Store: Perceptible {}
+
+extension Store where State: ObservableState {
+  var observableState: State {
+    self._$observationRegistrar.access(self, keyPath: \.currentState)
+    return self.currentState
+  }
+  
+  public var state: State {
+    self.observableState
+  }
+}
+```
+
+Source: [Store+Observation.swift:7-20](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/Store+Observation.swift#L7-L20)
+
+## Mixing Legacy and Modern Features
+
+<Warning>
+  Problems can arise when mixing legacy features (using `ViewStore`/`WithViewStore`) with modern features (using `@ObservableState`):
+  
+  - Views may re-compute more often than necessary
+  - SwiftUI may struggle to determine what changed
+  - Navigation bugs may occur or worsen
+</Warning>
+
+Source: [ObservationBackport.md:118-127](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Documentation.docc/Articles/ObservationBackport.md#L118-L127)
+
+Migrate features incrementally:
+
+```swift
+// Old (Legacy)
+@Reducer
+struct OldFeature {
+  struct State: Equatable {
+    var count: Int
+  }
+  // Uses WithViewStore in views
+}
+
+// New (Modern)
+@Reducer
+struct NewFeature {
+  @ObservableState
+  struct State {
+    var count: Int
+  }
+  // Direct store access in views
+}
+```
+
+## Platform Differences
+
+### visionOS
+
+On visionOS, TCA always uses native Observation:
+
+```swift
+#if !os(visionOS)
+  extension Store: Perceptible {}
+#else
+  // Uses native Observable
+#endif
+```
+
+Source: [Store+Observation.swift:7-9](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/Store+Observation.swift#L7-L9)
+
+### iOS 17+
+
+On iOS 17 and later, Store conforms to Observable:
+
+```swift
+@available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+extension Store: Observable {}
+```
+
+Source: [Store.swift:574-579](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L574-L579)
+
+## Best Practices
+
+### Always Use @ObservableState
+
+Even if you're only supporting iOS 17+, use `@ObservableState` instead of `@Observable`:
+
+```swift
+// ✅ Correct: Works on all platforms
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State { }
+}
+
+// ❌ Wrong: Only works on iOS 17+
+@Reducer
+struct Feature {
+  @Observable
+  class State { }  // Don't use class for state!
+}
+```
+
+### Wrap All View Bodies (iOS 13-16)
+
+Consistently use `WithPerceptionTracking`:
+
+```swift
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    WithPerceptionTracking {
+      // All view content
+    }
+  }
+}
+```
+
+### Check for Runtime Warnings
+
+If you see the purple runtime warning, check the stack trace to find where you're accessing state without tracking:
+
+1. Open the Issue Navigator (⌘5)
+2. Expand the warning
+3. Click through stack frames
+4. Find the line accessing state
+5. Add `WithPerceptionTracking`
+
+Source: [ObservationBackport.md:50-58](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Documentation.docc/Articles/ObservationBackport.md#L50-L58)
+
+### Prefer Structs for State
+
+Always use structs for state, not classes:
+
+```swift
+// ✅ Correct
+@ObservableState
+struct State {
+  var value: Int
+}
+
+// ❌ Wrong
+@Perceptible
+class State {
+  var value: Int
+}
+```
+
+## Performance Considerations
+
+### Observation Overhead
+
+The observation system has minimal overhead:
+- State access is tracked automatically
+- Only changed properties trigger view updates
+- Identity-based diffing optimizes collections
+
+### Fine-Grained Updates
+
+Observation enables fine-grained view updates:
+
+```swift
+@ObservableState
+struct State {
+  var firstName: String
+  var lastName: String
+  var email: String
+}
+
+struct NameView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    // Only updates when firstName or lastName change
+    // NOT when email changes
+    Text("\(store.firstName) \(store.lastName)")
+  }
+}
+```
+
+## Debugging
+
+### Skip Perception Checking
+
+For debugging, you can temporarily skip perception checking:
+
+```swift
+#if DEBUG
+  _PerceptionLocals.$skipPerceptionChecking.withValue(true) {
+    // Code that accesses state without tracking
+  }
+#endif
+```
+
+Source: [Store.swift:167-174](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L167-L174)
+
+### Observation Registrar
+
+The store uses an observation registrar internally:
+
+```swift
+#if !os(visionOS)
+  let _$observationRegistrar = PerceptionRegistrar(
+    isPerceptionCheckingEnabled: _isStorePerceptionCheckingEnabled
+  )
+#else
+  let _$observationRegistrar = ObservationRegistrar()
+#endif
+```
+
+Source: [Store.swift:110-116](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L110-L116)
+
+## Related Resources
+
+- [SwiftUI Integration](swiftui)
+- [UIKit Integration](uikit)
+- [Migration Guide 1.7](/migration/1-7)
+- [Perception Framework](https://github.com/pointfreeco/swift-perception)

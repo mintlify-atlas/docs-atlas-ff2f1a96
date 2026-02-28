@@ -1,0 +1,327 @@
+---
+title: SwiftUI Integration
+description: Learn how to integrate The Composable Architecture with SwiftUI views and components
+---
+
+The Composable Architecture was designed with SwiftUI in mind and provides seamless integration with SwiftUI's declarative view system.
+
+## Store in SwiftUI Views
+
+The primary way to integrate TCA with SwiftUI is through the `Store` type, which can be observed directly in your views.
+
+### Basic View Integration
+
+Pass stores to your SwiftUI views and observe state changes:
+
+```swift
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    Form {
+      Text(store.count.description)
+      Button("Increment") {
+        store.send(.incrementButtonTapped)
+      }
+    }
+  }
+}
+```
+
+### Using @Bindable (iOS 17+)
+
+For iOS 17 and later, use SwiftUI's `@Bindable` to create bindings:
+
+```swift
+struct FeatureView: View {
+  @Bindable var store: StoreOf<Feature>
+  
+  var body: some View {
+    Form {
+      TextField("Name", text: $store.name)
+      Toggle("Is enabled", isOn: $store.isEnabled)
+    }
+  }
+}
+```
+
+### Using Perception.Bindable (iOS 13-16)
+
+For pre-iOS 17, use the Perception framework's `@Bindable`:
+
+```swift
+struct FeatureView: View {
+  @Perception.Bindable var store: StoreOf<Feature>
+  
+  var body: some View {
+    WithPerceptionTracking {
+      Form {
+        TextField("Name", text: $store.name)
+        Toggle("Is enabled", isOn: $store.isEnabled)
+      }
+    }
+  }
+}
+```
+
+<Note>
+  When using `@Perception.Bindable`, you must wrap your view body in `WithPerceptionTracking` to properly observe state changes.
+</Note>
+
+## Scoping Stores
+
+Use the `scope` method to transform a store for child views:
+
+```swift
+struct AppView: View {
+  let store: StoreOf<AppFeature>
+  
+  var body: some View {
+    TabView {
+      ActivityView(
+        store: store.scope(state: \.activity, action: \.activity)
+      )
+      .tabItem { Text("Activity") }
+      
+      ProfileView(
+        store: store.scope(state: \.profile, action: \.profile)
+      )
+      .tabItem { Text("Profile") }
+    }
+  }
+}
+```
+
+Source: [Store.swift:26-85](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Store.swift#L26-L85)
+
+## Bindings
+
+### Two-Way Bindings
+
+TCA provides special support for SwiftUI bindings through the `BindableAction` protocol:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State {
+    var email: String = ""
+    var password: String = ""
+  }
+  
+  enum Action: BindableAction {
+    case binding(BindingAction<State>)
+  }
+  
+  var body: some ReducerOf<Self> {
+    BindingReducer()
+    Reduce { state, action in
+      // Your logic here
+    }
+  }
+}
+```
+
+In your view:
+
+```swift
+struct LoginView: View {
+  @Bindable var store: StoreOf<Feature>
+  
+  var body: some View {
+    Form {
+      TextField("Email", text: $store.email)
+      SecureField("Password", text: $store.password)
+    }
+  }
+}
+```
+
+Source: [Binding.swift:84-101](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/SwiftUI/Binding.swift#L84-L101)
+
+### Custom Bindings
+
+Create custom bindings that send specific actions:
+
+```swift
+@Bindable var store: StoreOf<Feature>
+
+TextField(
+  "Query",
+  text: $store.searchQuery.sending(\.searchQueryChanged)
+)
+```
+
+Source: [Binding+Observation.swift:271-279](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/Binding+Observation.swift#L271-L279)
+
+## Navigation
+
+### Sheet Presentation
+
+Use binding scopes for sheet presentation:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State {
+    @Presents var destination: Destination.State?
+  }
+  
+  enum Action {
+    case destination(PresentationAction<Destination.Action>)
+  }
+}
+
+struct FeatureView: View {
+  @Bindable var store: StoreOf<Feature>
+  
+  var body: some View {
+    Button("Show Details") {
+      store.send(.showDetailButtonTapped)
+    }
+    .sheet(item: $store.scope(state: \.destination, action: \.destination)) { store in
+      DestinationView(store: store)
+    }
+  }
+}
+```
+
+Source: [Store+Observation.swift:127-159](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/Store+Observation.swift#L127-L159)
+
+### Alerts
+
+Present alerts using store bindings:
+
+```swift
+struct FeatureView: View {
+  @Bindable var store: StoreOf<Feature>
+  
+  var body: some View {
+    Button("Delete") {
+      store.send(.deleteButtonTapped)
+    }
+    .alert($store.scope(state: \.alert, action: \.alert))
+  }
+}
+```
+
+Source: [Alert+Observation.swift:4-35](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/Alert+Observation.swift#L4-L35)
+
+### Confirmation Dialogs
+
+Similar to alerts, confirmation dialogs use store bindings:
+
+```swift
+struct FeatureView: View {
+  @Bindable var store: StoreOf<Feature>
+  
+  var body: some View {
+    Button("Options") {
+      store.send(.optionsButtonTapped)
+    }
+    .confirmationDialog($store.scope(state: \.dialog, action: \.dialog))
+  }
+}
+```
+
+Source: [Alert+Observation.swift:38-72](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/Alert+Observation.swift#L38-L72)
+
+## Observable State
+
+Mark your state with `@ObservableState` to enable observation:
+
+```swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State {
+    var count: Int = 0
+    var isLoading: Bool = false
+  }
+}
+```
+
+This allows SwiftUI views to automatically observe changes:
+
+```swift
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    // View automatically re-renders when count or isLoading changes
+    if store.isLoading {
+      ProgressView()
+    } else {
+      Text("Count: \(store.count)")
+    }
+  }
+}
+```
+
+Source: [Store+Observation.swift:11-25](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Observation/Store+Observation.swift#L11-L25)
+
+## Best Practices
+
+### Scope Early, Scope Often
+
+Scope stores to the minimum state needed by each view:
+
+```swift
+// Good: Child view only sees its own state
+ChildView(store: store.scope(state: \.child, action: \.child))
+
+// Avoid: Passing entire store when only part is needed
+ChildView(store: store)  // Don't do this
+```
+
+### Use WithPerceptionTracking for iOS 13-16
+
+When supporting pre-iOS 17, always wrap view bodies in `WithPerceptionTracking`:
+
+```swift
+struct FeatureView: View {
+  let store: StoreOf<Feature>
+  
+  var body: some View {
+    WithPerceptionTracking {
+      // Your view code
+    }
+  }
+}
+```
+
+Don't forget to also wrap lazy closures like `ForEach`:
+
+```swift
+WithPerceptionTracking {
+  ForEach(store.rows, id: \.id) { row in
+    WithPerceptionTracking {
+      RowView(row: row)
+    }
+  }
+}
+```
+
+Source: [ObservationBackport.md:85-116](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Documentation.docc/Articles/ObservationBackport.md#L85-L116)
+
+### Prefer Direct Store Access
+
+With observable state, access store properties directly:
+
+```swift
+// Good: Direct access with observation
+Text(store.title)
+
+// Old style: No longer needed
+WithViewStore(store, observe: { $0 }) { viewStore in
+  Text(viewStore.title)
+}
+```
+
+## Related Resources
+
+- [Observation Framework Integration](observation)
+- [UIKit Integration](uikit)
+- [Bindings Guide](/guides/bindings)
+- [Navigation Patterns](/guides/navigation)

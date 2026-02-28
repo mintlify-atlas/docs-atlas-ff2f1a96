@@ -1,0 +1,431 @@
+---
+title: Reducers
+description: The Reducer protocol and @Reducer macro for defining application logic
+---
+
+# Reducers
+
+Reducers are the core of application logic in TCA. A reducer describes how to evolve the current state to the next state given an action, and what effects should be executed.
+
+## The Reducer Protocol
+
+The `Reducer` protocol defines the interface for all reducers:
+
+```swift Reducer.swift
+public protocol Reducer<State, Action> {
+  associatedtype State
+  associatedtype Action
+  associatedtype Body
+  
+  @ReducerBuilder<State, Action>
+  var body: Body { get }
+}
+```
+
+Source: [Reducer.swift:3-67](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Reducer.swift#L3-L67)
+
+## The @Reducer Macro
+
+The `@Reducer` macro simplifies conforming to the `Reducer` protocol:
+
+```swift Feature.swift
+@Reducer
+struct Feature {
+  @ObservableState
+  struct State {
+    var count: Int = 0
+  }
+  
+  enum Action {
+    case incrementButtonTapped
+    case decrementButtonTapped
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .incrementButtonTapped:
+        state.count += 1
+        return .none
+        
+      case .decrementButtonTapped:
+        state.count -= 1
+        return .none
+      }
+    }
+  }
+}
+```
+
+<Note>
+The `@Reducer` macro generates:
+- Nested `State` and `Action` types (if not already defined)
+- Conformance to the `Reducer` protocol
+- Helper types for scoping and composition
+</Note>
+
+## Reducer Body
+
+The `body` property is where you define your reducer logic using a result builder syntax.
+
+### Using Reduce
+
+The `Reduce` type allows inline reducer logic:
+
+```swift
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    switch action {
+    case .buttonTapped:
+      state.isLoading = true
+      return .run { send in
+        let result = try await apiClient.fetch()
+        await send(.dataLoaded(result))
+      }
+      
+    case let .dataLoaded(data):
+      state.isLoading = false
+      state.data = data
+      return .none
+    }
+  }
+}
+```
+
+Source: [Reduce.swift:1-37](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Reducer/Reducers/Reduce.swift)
+
+<Info>
+Reducers receive an `inout State` parameter, allowing direct mutation. The reducer returns an `Effect<Action>` describing what side effects to execute.
+</Info>
+
+## Combining Reducers
+
+Use the `@ReducerBuilder` to combine multiple reducers:
+
+```swift ParentFeature.swift
+@Reducer
+struct Parent {
+  @ObservableState
+  struct State {
+    var counter: Counter.State
+    var profile: Profile.State
+  }
+  
+  enum Action {
+    case counter(Counter.Action)
+    case profile(Profile.Action)
+  }
+  
+  var body: some Reducer<State, Action> {
+    // Child reducers run first
+    Scope(state: \.counter, action: \.counter) {
+      Counter()
+    }
+    
+    Scope(state: \.profile, action: \.profile) {
+      Profile()
+    }
+    
+    // Parent logic runs after children
+    Reduce { state, action in
+      switch action {
+      case .counter(.incrementButtonTapped):
+        // React to child actions
+        print("Counter was incremented")
+        return .none
+        
+      default:
+        return .none
+      }
+    }
+  }
+}
+```
+
+### Execution Order
+
+Reducers in the body execute **top to bottom**:
+
+```swift
+var body: some Reducer<State, Action> {
+  ReducerA()  // Runs first
+  ReducerB()  // Runs second
+  ReducerC()  // Runs third
+}
+```
+
+<Warning>
+The order matters! Child reducers should run before parent reducers that might change the shape of state (e.g., setting optional child state to nil).
+</Warning>
+
+## Scoping Reducers
+
+The `Scope` reducer embeds a child reducer in a parent domain:
+
+```swift
+Scope(state: \.child, action: \.child) {
+  ChildFeature()
+}
+```
+
+Source: [Scope.swift:1-225](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Reducer/Reducers/Scope.swift)
+
+### Scoping to Key Paths
+
+```swift
+@ObservableState
+struct State {
+  var settings: Settings.State
+}
+
+enum Action {
+  case settings(Settings.Action)
+}
+
+var body: some Reducer<State, Action> {
+  Scope(state: \.settings, action: \.settings) {
+    Settings()
+  }
+}
+```
+
+### Scoping to Optional State
+
+Use `ifLet` for optional child state:
+
+```swift
+@ObservableState
+struct State {
+  @Presents var destination: Destination.State?
+}
+
+enum Action {
+  case destination(PresentationAction<Destination.Action>)
+}
+
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // Core logic
+  }
+  .ifLet(\.$destination, action: \.destination) {
+    Destination()
+  }
+}
+```
+
+### Scoping to Collections
+
+Use `forEach` for collections:
+
+```swift
+import IdentifiedCollections
+
+@ObservableState
+struct State {
+  var todos: IdentifiedArrayOf<Todo.State> = []
+}
+
+enum Action {
+  case todos(IdentifiedActionOf<Todo>)
+}
+
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // Parent logic
+  }
+  .forEach(\.todos, action: \.todos) {
+    Todo()
+  }
+}
+```
+
+## Reducer Modifiers
+
+TCA provides several built-in modifiers to enhance reducers:
+
+### ifLet
+
+Run a reducer only when state is non-nil:
+
+```swift
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // Core logic
+  }
+  .ifLet(\.$alert, action: \.alert)
+}
+```
+
+### forEach
+
+Run a reducer for each element in a collection:
+
+```swift
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // Core logic
+  }
+  .forEach(\.items, action: \.items) {
+    Item()
+  }
+}
+```
+
+### Debug Modifiers
+
+```swift
+var body: some Reducer<State, Action> {
+  Reduce { state, action in
+    // Logic
+  }
+  ._printChanges()  // Print state changes
+  .signpost()       // Instruments signposts
+}
+```
+
+## ReducerOf Type Alias
+
+Use `ReducerOf` for less verbose type signatures:
+
+```swift Reducer.swift
+public typealias ReducerOf<R: Reducer> = Reducer<R.State, R.Action>
+```
+
+```swift
+// Instead of:
+var body: some Reducer<State, Action> { /* ... */ }
+
+// You can write:
+var body: some ReducerOf<Self> { /* ... */ }
+```
+
+Source: [Reducer.swift:131](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Sources/ComposableArchitecture/Reducer.swift#L131)
+
+## Testing Reducers
+
+Reducers are pure functions, making them easy to test:
+
+```swift FeatureTests.swift
+import ComposableArchitecture
+import XCTest
+
+@MainActor
+final class FeatureTests: XCTestCase {
+  func testIncrement() async {
+    let store = TestStore(initialState: Feature.State()) {
+      Feature()
+    }
+    
+    await store.send(.incrementButtonTapped) {
+      $0.count = 1
+    }
+  }
+}
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Keep Reducers Focused">
+    Each reducer should handle a single feature or domain. Compose larger features from smaller reducers.
+  </Step>
+  
+  <Step title="Handle All Actions">
+    Use exhaustive switching to ensure all actions are handled:
+    
+    ```swift
+    Reduce { state, action in
+      switch action {
+      case .action1:
+        return .none
+      case .action2:
+        return .none
+      // Compiler ensures all cases handled
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Return Effects Explicitly">
+    Always return an effect, even if it's `.none`:
+    
+    ```swift
+    case .buttonTapped:
+      state.isLoading = true
+      return .none  // No effect needed
+    ```
+  </Step>
+  
+  <Step title="Don't Call Reducers Directly">
+    Never invoke a reducer's `reduce` method directly. Use the `Store` to process actions:
+    
+    ```swift
+    // ❌ Don't do this
+    let effect = reducer.reduce(into: &state, action: .something)
+    
+    // ✅ Do this instead
+    store.send(.something)
+    ```
+  </Step>
+</Steps>
+
+## Common Patterns
+
+### Delegate Actions
+
+Child features can communicate with parents through delegate actions:
+
+```swift
+@Reducer
+struct Child {
+  enum Action {
+    case delegate(Delegate)
+    
+    enum Delegate {
+      case didComplete
+      case didCancel
+    }
+  }
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .saveButtonTapped:
+        // Notify parent
+        return .send(.delegate(.didComplete))
+      }
+    }
+  }
+}
+```
+
+### Dependency Injection
+
+Inject dependencies using the `@Dependency` property wrapper:
+
+```swift
+@Reducer
+struct Feature {
+  @Dependency(\.apiClient) var apiClient
+  @Dependency(\.uuid) var uuid
+  
+  var body: some Reducer<State, Action> {
+    Reduce { state, action in
+      switch action {
+      case .fetch:
+        return .run { send in
+          let data = try await apiClient.fetchData()
+          await send(.dataLoaded(data))
+        }
+      }
+    }
+  }
+}
+```
+
+## Related Topics
+
+- [State Management](/concepts/state-management) - How state is structured
+- [Effects](/concepts/effects) - Handling side effects
+- [Composition](/concepts/composition) - Building features from smaller parts
+- [Store](/concepts/store) - The runtime that executes reducers
