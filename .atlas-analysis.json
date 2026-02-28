@@ -1,0 +1,174 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "The Composable Architecture",
+  "projectDescription": "A library for building applications in a consistent and understandable way, with composition, testing, and ergonomics in mind.",
+  "theme": "palm",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#A78BFA",
+  "darkColor": "#6D28D9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/state-management",
+              "concepts/reducers",
+              "concepts/effects",
+              "concepts/store",
+              "concepts/composition"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/testing",
+              "guides/dependencies",
+              "guides/navigation",
+              "guides/sharing-state",
+              "guides/bindings",
+              "guides/performance",
+              "guides/concurrency"
+            ]
+          },
+          {
+            "group": "Navigation",
+            "pages": [
+              "navigation/overview",
+              "navigation/tree-based",
+              "navigation/stack-based"
+            ]
+          },
+          {
+            "group": "Integration",
+            "pages": [
+              "integration/swiftui",
+              "integration/uikit",
+              "integration/observation"
+            ]
+          },
+          {
+            "group": "Migration Guides",
+            "pages": [
+              "migration/overview",
+              "migration/v1-19",
+              "migration/v1-18",
+              "migration/v1-17"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Types",
+            "pages": [
+              "api/reducer",
+              "api/store",
+              "api/effect",
+              "api/test-store"
+            ]
+          },
+          {
+            "group": "Macros",
+            "pages": [
+              "api/reducer-macro",
+              "api/observable-state",
+              "api/dependency"
+            ]
+          },
+          {
+            "group": "Reducer Builders",
+            "pages": [
+              "api/reduce",
+              "api/scope",
+              "api/foreach",
+              "api/iflet"
+            ]
+          },
+          {
+            "group": "Navigation Types",
+            "pages": [
+              "api/presents",
+              "api/navigation-link-state",
+              "api/stack-state"
+            ]
+          },
+          {
+            "group": "SwiftUI Integration",
+            "pages": [
+              "api/store-of",
+              "api/with-view-store",
+              "api/switch-store"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Case Studies",
+            "pages": [
+              "examples/counter",
+              "examples/two-counters",
+              "examples/todos",
+              "examples/tic-tac-toe"
+            ]
+          },
+          {
+            "group": "Real-World Apps",
+            "pages": [
+              "examples/syncups",
+              "examples/voice-memos",
+              "examples/search"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "State management with predictable state changes",
+    "Effect-based side effect handling",
+    "Comprehensive testing with TestStore",
+    "Dependency injection system",
+    "Tree-based and stack-based navigation",
+    "SwiftUI and UIKit integration",
+    "Shared state management",
+    "Composition and modularity"
+  ],
+  "publicApiSurface": [
+    "@Reducer",
+    "@ObservableState",
+    "@Dependency",
+    "Reducer",
+    "Store",
+    "StoreOf",
+    "Effect",
+    "TestStore",
+    "Reduce",
+    "Scope",
+    "ForEach",
+    "IfLet",
+    "Presents",
+    "NavigationLinkState",
+    "StackState",
+    "WithViewStore",
+    "SwitchStore",
+    "BindingAction",
+    "PresentationAction",
+    "StackAction"
+  ]
+}
